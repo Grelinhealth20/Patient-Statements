@@ -75,7 +75,6 @@ Set these in **Settings → Environment Variables** for **Production** and
 | `SUPER_ADMIN_NAME` | `Super Administrator` |
 | `USPS_CLIENT_ID` | `<usps-consumer-key>` *(address validator — USPS APIs v3 OAuth)* |
 | `USPS_CLIENT_SECRET` | `<usps-consumer-secret>` *(address validator — USPS APIs v3 OAuth)* |
-| `USPS_USERID` | `grelinhealthinc` *(legacy Web Tools fallback; used only if v3 keys are unset)* |
 | `AWS_ACCESS_KEY_ID` | `<your-aws-access-key>` *(omit to use an IAM role)* |
 | `AWS_SECRET_ACCESS_KEY` | `<your-aws-secret-key>` *(omit to use an IAM role)* |
 | `S3_REGION` | `us-east-1` |
@@ -98,8 +97,8 @@ Set these in **Settings → Environment Variables** for **Production** and
 > match returns the standardized line + ZIP+4 + DPV, which is written to the DB and
 > recorded in the audit log. The token is cached and auto-regenerated before expiry
 > (with a one-retry safety net on 401). If USPS cannot identify an address, the user
-> gets a clear USPS message — there is no third-party fallback. The legacy Web Tools
-> `USPS_USERID` path is used only if the v3 keys are unset. USPS address validation
+> gets a clear USPS message — there is no fallback. The USPS Addresses v3 API is the
+> **sole** address validator; no other address API is used. USPS address validation
 > carries **no per-call charge**.
 
 > Generate fresh JWT secrets for a real production deploy:

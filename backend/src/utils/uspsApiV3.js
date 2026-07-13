@@ -1,8 +1,8 @@
 import { env } from '../config/env.js';
-import { splitAddress, buildUspsStatus, UspsValidationError } from './uspsValidation.js';
 
 /**
- * PRIMARY address validator — USPS APIs v3 (the current USPS platform).
+ * The SOLE address validator — the USPS Addresses v3 API (the current USPS platform).
+ * No other address-validation API is used anywhere in this app.
  *
  *   Token:    POST {apiBase}/oauth2/v3/token   (OAuth2 client_credentials, scope "addresses")
  *   Validate: GET  {apiBase}/addresses/v3/address?streetAddress=…&state=…&city=…&ZIPCode=…
@@ -15,7 +15,7 @@ import { splitAddress, buildUspsStatus, UspsValidationError } from './uspsValida
  * On success this returns a normalized shape (line1/line2/formatted/complete/
  * verdictText…) so the resolver/DB path is provider-agnostic. When USPS cannot
  * identify an address accurately it throws `UspsValidationError`, which the caller
- * surfaces to the user (USPS is the sole validator — there is no fallback).
+ * surfaces to the user — there is no fallback provider.
  */
 
 const DEFAULT_TIMEOUT_MS = 10000;
@@ -25,6 +25,75 @@ const DEFAULT_TIMEOUT_MS = 10000;
 const TOKEN_SKEW_MS = 5 * 60 * 1000;
 
 const s = (v) => (v == null ? '' : String(v)).trim();
+
+/** Structured error signalling that USPS could not accurately validate the address. */
+export class UspsValidationError extends Error {
+  constructor(message, code = '') {
+    super(message);
+    this.name = 'UspsValidationError';
+    this.code = code; // NOT_CONFIGURED | INSUFFICIENT_INPUT | AUTH | NOT_FOUND | UNCONFIRMED | UPSTREAM | TIMEOUT
+  }
+}
+
+/* ----------------------------------------------------------- address parsing */
+
+/** Parse a free-form "City, ST 12345-6789" tail into components (zip optional). */
+function parseCityStateZip(line) {
+  const t = s(line);
+  if (!t) return { city: '', state: '', zip5: '', zip4: '' };
+  let m = t.match(/^\s*(.+?)[,\s]+([A-Za-z]{2})\s+(\d{5})(?:-(\d{4}))?\s*$/);
+  if (m) return { city: m[1].replace(/[,\s]+$/, '').trim(), state: m[2].toUpperCase(), zip5: m[3], zip4: m[4] || '' };
+  m = t.match(/^\s*(.+?)[,\s]+([A-Za-z]{2})\s*$/);
+  if (m) return { city: m[1].replace(/[,\s]+$/, '').trim(), state: m[2].toUpperCase(), zip5: '', zip4: '' };
+  return { city: '', state: '', zip5: '', zip4: '' };
+}
+
+/**
+ * Pull a trailing secondary unit (APT/STE/UNIT/#/BLDG/FL/RM…) off a street line.
+ * Conservative: only splits on a designator + a unit id containing a digit ("STE 100",
+ * "# 410253") or a lone letter ("UNIT B"), so real street names that merely contain a
+ * designator word ("100 SPACE CENTER BLVD", "5 LOT LANE") are never mis-split.
+ */
+function splitSecondary(street) {
+  const t = s(street);
+  const unitId = '(?:[\\w-]*\\d[\\w-]*|[A-Za-z])';
+  const desig = '(?:#|apt|apartment|ste|suite|unit|bldg|building|fl|floor|rm|room|dept|department|space|spc|trlr|lot|pmb|box|hangar|slip|pier|key|stop)';
+  const re = new RegExp(`^(.*?\\S)[,\\s]+(${desig}\\.?\\s*#?\\s*${unitId})\\s*$`, 'i');
+  const m = t.match(re);
+  if (m && /\d/.test(m[1]) && /[a-z]/i.test(m[1])) {
+    return { primary: m[1].replace(/[,\s]+$/, '').trim(), secondary: m[2].replace(/\s+/g, ' ').trim() };
+  }
+  return { primary: t, secondary: '' };
+}
+
+/**
+ * Split the app's two free-form lines into the components USPS needs:
+ *   street (primary delivery line) + secondary (unit) + city + state + zip5[/zip4].
+ * Handles the clean two-line case (line1=street, line2="City, ST ZIP") and the
+ * combined case (everything on line1).
+ */
+export function splitAddress(line1, line2) {
+  const l1 = s(line1);
+  const l2 = s(line2);
+
+  let csz = parseCityStateZip(l2);
+  if (csz.zip5 || csz.state) {
+    const { primary, secondary } = splitSecondary(l1);
+    return { street: primary, secondary, ...csz };
+  }
+
+  const combined = [l1, l2].filter(Boolean).join(', ');
+  csz = parseCityStateZip(combined);
+  if (csz.zip5 || csz.state) {
+    const anchor = csz.city ? combined.toLowerCase().lastIndexOf(csz.city.toLowerCase()) : -1;
+    const streetRaw = anchor > 0 ? combined.slice(0, anchor).replace(/[,\s]+$/, '') : l1;
+    const { primary, secondary } = splitSecondary(streetRaw || l1);
+    return { street: primary || l1, secondary, ...csz };
+  }
+
+  const { primary, secondary } = splitSecondary(l1);
+  return { street: primary, secondary, city: '', state: '', zip5: '', zip4: '' };
+}
 
 /**
  * True when a response indicates an access-token problem (expired / invalid / missing)
@@ -259,9 +328,24 @@ export async function validateAddressUspsV3({ line1, line2 } = {}, opts = {}) {
   };
 }
 
-/** Provider-labelled real-time status descriptor for the popup (USPS v3, free). */
+/**
+ * Real-time status descriptor for the client popup. USPS address validation is free
+ * (no per-call billing), so the verdict is always FREE — sourced from ground truth,
+ * never fabricated.
+ */
 export function buildUspsV3Status(validated = null) {
-  return buildUspsStatus(validated, 'USPS Addresses API v3');
+  return {
+    provider: 'USPS Addresses API v3',
+    live: true,
+    billingEnabled: null,
+    plan: 'free',
+    planLabel: 'USPS — free (no per-call charge)',
+    verdict: 'FREE',
+    note: 'Validated by the USPS Addresses v3 API — the sole address validator. Free of charge.',
+    dpv: validated?.dpv || null,
+    zipPlus4: validated?.zipPlus4 ?? null,
+    checkedAt: new Date().toISOString(),
+  };
 }
 
 /* ----------------------------------------------------------------- health */

@@ -1,8 +1,7 @@
 import { getPool } from '../config/db.js';
 import { env } from '../config/env.js';
 import { writeAudit } from '../config/initDb.js';
-import { resolvePatientAddress, isAnyUspsConfigured, probeUsps } from '../utils/addressResolver.js';
-import { UspsValidationError } from '../utils/uspsValidation.js';
+import { resolvePatientAddress, isAnyUspsConfigured, probeUsps, UspsValidationError } from '../utils/addressResolver.js';
 import { recordApiCall, getMonthlyCallCount } from '../utils/apiUsage.js';
 import {
   isS3Configured,
@@ -714,11 +713,10 @@ export async function addressValidationStatus(req, res, next) {
       ? await probeUsps().catch((e) => ({ configured: true, healthy: false, reason: e.message }))
       : { configured: false, healthy: false, reason: 'USPS is not configured.' };
 
-    const providerName = health.path === 'v3' ? 'USPS Addresses API v3' : 'USPS Web Tools (Address Validation)';
     const api = {
-      provider: providerName,
+      provider: 'USPS Addresses API v3',
       primary: 'usps',
-      uspsPath: health.path || null,
+      uspsPath: 'v3',
       configured: !!health.configured,
       uspsHealthy: !!health.healthy,
       live: !!health.healthy,

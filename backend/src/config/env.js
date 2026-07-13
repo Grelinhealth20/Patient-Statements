@@ -40,21 +40,14 @@ export const env = {
     name: process.env.SUPER_ADMIN_NAME || 'Super Administrator',
   },
 
-  // USPS — the SOLE address validator (source of truth for US mail). Server-side only.
-  // Two supported auth paths, preferred in this order:
-  //   1) USPS APIs v3 (apis.usps.com) — OAuth2 client_credentials with a Consumer Key
-  //      (clientId) + Consumer Secret (clientSecret), scope "addresses". Current USPS
-  //      platform (the legacy Web Tools address APIs were retired).
-  //   2) Legacy Web Tools (secure.shippingapis.com) — USERID only. Fallback path for
-  //      accounts still provisioned on Web Tools.
+  // USPS Addresses v3 API — the SOLE address validator (source of truth for US mail).
+  // OAuth2 client_credentials with a Consumer Key (clientId) + Consumer Secret
+  // (clientSecret) from developer.usps.com, scope "addresses". Server-side only; no
+  // other address-validation API is used anywhere in the app.
   usps: {
-    // USPS APIs v3 (OAuth2)
     clientId: process.env.USPS_CLIENT_ID || '',
     clientSecret: process.env.USPS_CLIENT_SECRET || '',
     apiBase: process.env.USPS_API_BASE || 'https://apis.usps.com',
-    // Legacy Web Tools (USERID)
-    userId: process.env.USPS_USERID || '',
-    endpoint: process.env.USPS_ENDPOINT || 'https://secure.shippingapis.com/ShippingAPI.dll',
   },
 
   s3: {
