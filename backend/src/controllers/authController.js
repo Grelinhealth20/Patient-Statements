@@ -108,6 +108,49 @@ export async function logout(req, res, next) {
   }
 }
 
+/**
+ * POST /api/auth/set-initial-password — completes the forced first-login reset.
+ *
+ * The caller is already authenticated (they logged in with the admin-issued temp
+ * password, so their JWT is valid). They supply only a new password; on success the
+ * temp-password flag is cleared, all prior tokens are revoked (token_version bumped),
+ * and a BRAND-NEW session is returned so the user proceeds to the dashboard in real
+ * time — no re-login. Rejects a new password identical to the temporary one.
+ */
+export async function setInitialPassword(req, res, next) {
+  try {
+    const { newPassword } = req.body;
+    if (!newPassword || String(newPassword).length < 8) {
+      return res.status(400).json({ message: 'New password must be at least 8 characters.' });
+    }
+
+    const pool = getPool();
+    const fresh = await findUserById(req.user.id);
+    if (!fresh) return res.status(401).json({ message: 'Account no longer exists.' });
+
+    const same = await bcrypt.compare(newPassword, fresh.password_hash);
+    if (same) {
+      return res.status(400).json({ message: 'Your new password must be different from the temporary password.' });
+    }
+
+    const hash = await bcrypt.hash(newPassword, 12);
+    await pool.query(
+      `UPDATE users
+          SET password_hash = :hash, must_change_password = 0, token_version = token_version + 1
+        WHERE id = :id`,
+      { hash, id: req.user.id }
+    );
+    await writeAudit({ actorId: req.user.id, action: 'SET_INITIAL_PASSWORD', targetId: req.user.id, detail: 'Completed forced first-login password reset' });
+
+    // Re-read the user (cleared flag + bumped token_version) and mint a fresh session
+    // so the new tokens are valid and the client can continue without signing in again.
+    const updated = await findUserById(req.user.id);
+    return res.json(issueSession(updated));
+  } catch (err) {
+    next(err);
+  }
+}
+
 /** POST /api/auth/change-password — for the currently signed-in user. */
 export async function changePassword(req, res, next) {
   try {

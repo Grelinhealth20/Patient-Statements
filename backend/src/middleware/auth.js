@@ -27,7 +27,7 @@ export async function requireAuth(req, res, next) {
 
     const pool = getPool();
     const [rows] = await pool.query(
-      `SELECT id, username, email, full_name, role, statement_access, is_active, token_version
+      `SELECT id, username, email, full_name, role, statement_access, is_active, token_version, must_change_password
          FROM users WHERE id = :id LIMIT 1`,
       { id: payload.sub }
     );
@@ -45,6 +45,23 @@ export async function requireAuth(req, res, next) {
   } catch (err) {
     next(err);
   }
+}
+
+/**
+ * Enterprise guard: a user carrying a temporary password (must_change_password) is
+ * blocked from EVERY protected feature until they set a new password. This is enforced
+ * server-side on top of the JWT check, so the forced-reset cannot be bypassed by
+ * calling the API directly — only /auth/set-initial-password, /auth/me and
+ * /auth/logout remain reachable while the flag is set.
+ */
+export function blockIfPasswordChangeRequired(req, res, next) {
+  if (req.user && req.user.must_change_password) {
+    return res.status(403).json({
+      message: 'You must set a new password before continuing.',
+      code: 'PASSWORD_CHANGE_REQUIRED',
+    });
+  }
+  next();
 }
 
 /** Restricts a route to super administrators only. */

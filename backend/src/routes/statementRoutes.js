@@ -1,12 +1,14 @@
 import { Router, raw } from 'express';
-import { requireAuth, requireStatementAccess } from '../middleware/auth.js';
+import { requireAuth, requireStatementAccess, blockIfPasswordChangeRequired } from '../middleware/auth.js';
 import { env } from '../config/env.js';
 import {
   importRows,
   listPatients,
+  financialSummary,
   listPendingPatients,
   listPatientDos,
   validatePatientAddress,
+  updatePatientAddress,
   addressValidationStatus,
   generateStatement,
   storeStatementPdf,
@@ -15,8 +17,9 @@ import {
 
 const router = Router();
 
-// Everything here requires an authenticated user with Statement Generator access.
-router.use(requireAuth, requireStatementAccess);
+// Everything here requires an authenticated user with Statement Generator access whose
+// password is already set (a temp-password account must reset it first).
+router.use(requireAuth, blockIfPasswordChangeRequired, requireStatementAccess);
 
 router.get('/ping', (req, res) => {
   res.json({ ok: true, message: 'Statement Generator access confirmed.' });
@@ -24,9 +27,11 @@ router.get('/ping', (req, res) => {
 
 router.post('/import', importRows);
 router.get('/patients', listPatients);
+router.get('/summary', financialSummary);
 router.get('/patients/pending', listPendingPatients);
 router.get('/patients/:key/dos', listPatientDos);
 router.post('/patients/:key/validate-address', validatePatientAddress);
+router.put('/patients/:key/address', updatePatientAddress);
 router.get('/address-validation/status', addressValidationStatus);
 router.post('/generate', generateStatement);
 

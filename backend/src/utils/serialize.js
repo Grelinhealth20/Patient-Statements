@@ -8,6 +8,7 @@ export function publicUser(row) {
     fullName: row.full_name,
     role: row.role,
     statementAccess: Boolean(row.statement_access),
+    mustChangePassword: Boolean(row.must_change_password),
     isActive: Boolean(row.is_active),
     lastLoginAt: row.last_login_at,
     createdAt: row.created_at,

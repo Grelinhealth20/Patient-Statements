@@ -73,9 +73,11 @@ export async function createUser(req, res, next) {
     }
 
     const hash = await bcrypt.hash(password, 12);
+    // The admin-supplied password is TEMPORARY: force the user to set their own on
+    // first login before they can access anything (must_change_password = 1).
     const [result] = await pool.query(
-      `INSERT INTO users (username, email, full_name, password_hash, role, statement_access, is_active)
-       VALUES (:username, :email, :fullName, :hash, :role, :access, 1)`,
+      `INSERT INTO users (username, email, full_name, password_hash, role, statement_access, is_active, must_change_password)
+       VALUES (:username, :email, :fullName, :hash, :role, :access, 1, 1)`,
       {
         username: username.trim(),
         email: email.trim(),
@@ -187,13 +189,15 @@ export async function resetPassword(req, res, next) {
     if (!target) return res.status(404).json({ message: 'User not found.' });
 
     const hash = await bcrypt.hash(newPassword, 12);
+    // An admin reset issues a TEMPORARY password: revoke existing sessions and force the
+    // user to set a new password on their next login (must_change_password = 1).
     await getPool().query(
-      `UPDATE users SET password_hash = :hash, token_version = token_version + 1 WHERE id = :id`,
+      `UPDATE users SET password_hash = :hash, token_version = token_version + 1, must_change_password = 1 WHERE id = :id`,
       { hash, id }
     );
     await writeAudit({ actorId: req.user.id, action: 'RESET_PASSWORD', targetId: id, detail: `Reset password for ${target.username}` });
 
-    return res.json({ message: `Password reset for ${target.username}.` });
+    return res.json({ message: `Password reset for ${target.username}. They will be asked to set a new password at next login.` });
   } catch (err) {
     next(err);
   }

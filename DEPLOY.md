@@ -73,13 +73,9 @@ Set these in **Settings → Environment Variables** for **Production** and
 | `SUPER_ADMIN_EMAIL` | `admin@grelinhealth.com` |
 | `SUPER_ADMIN_PASSWORD` | `<your-admin-password>` |
 | `SUPER_ADMIN_NAME` | `Super Administrator` |
-| `USPS_CLIENT_ID` | `<usps-consumer-key>` *(PRIMARY validator — USPS APIs v3 OAuth)* |
-| `USPS_CLIENT_SECRET` | `<usps-consumer-secret>` *(PRIMARY validator — USPS APIs v3 OAuth)* |
-| `USPS_USERID` | `grelinhealthinc` *(legacy Web Tools fallback; retired for this account)* |
-| `GOOGLE_ADDRESS_VALIDATION_API_KEY` | `<your-google-api-key>` *(BACKUP validator)* |
-| `GOOGLE_ADDRESS_VALIDATION_REGION` | `US` |
-| `GCP_PROJECT_ID` | `<gcp-project-that-owns-the-key>` *(optional; enables project-wide usage)* |
-| `GCP_SERVICE_ACCOUNT_JSON` | `<service-account-key-as-one-line-json>` *(optional; see below)* |
+| `USPS_CLIENT_ID` | `<usps-consumer-key>` *(address validator — USPS APIs v3 OAuth)* |
+| `USPS_CLIENT_SECRET` | `<usps-consumer-secret>` *(address validator — USPS APIs v3 OAuth)* |
+| `USPS_USERID` | `grelinhealthinc` *(legacy Web Tools fallback; used only if v3 keys are unset)* |
 | `AWS_ACCESS_KEY_ID` | `<your-aws-access-key>` *(omit to use an IAM role)* |
 | `AWS_SECRET_ACCESS_KEY` | `<your-aws-secret-key>` *(omit to use an IAM role)* |
 | `S3_REGION` | `us-east-1` |
@@ -95,69 +91,19 @@ Set these in **Settings → Environment Variables** for **Production** and
 > credential provider chain is used. If the bucket is not configured, generation
 > still works and PDFs download locally (archival is simply skipped).
 
-> **Address validation providers.** USPS Web Tools is the **primary** validator
-> (free, real-time; authenticates with `USPS_USERID` only — no password). Google
-> Address Validation is the **backup**, used only when USPS cannot identify an
-> address accurately. The corrected address is written to the DB identically
-> regardless of which provider served it, and the audit log records the provider.
->
-> **USPS APIs v3 (OAuth2).** The primary validator uses the current USPS platform
-> (`apis.usps.com`): the app mints an OAuth2 access token from `USPS_CLIENT_ID` +
+> **Address validation (USPS only).** USPS is the **sole** validator — free and
+> real-time. The app mints an OAuth2 access token from `USPS_CLIENT_ID` +
 > `USPS_CLIENT_SECRET` (Consumer Key/Secret from developer.usps.com, scope
-> `addresses`) and calls `GET /addresses/v3/address`. Verified live: an exact match
-> returns the standardized line + ZIP+4 + DPV. The legacy Web Tools `USPS_USERID`
-> path is retired for this account and only used if the v3 keys are unset; either way
-> Google is the final backup. The app probes USPS health live, so the pill/labels
-> always reflect the provider actually serving.
-
-> **Address Validation billing tier (live).** The "Free Tier / Paid" pill and the
-> API-status popup are driven by REAL data, never fabricated. SKU name, free
-> allowance, and unit price come from the **Cloud Billing Catalog** (works with the
-> API key alone). The month-to-date call count that decides FREE vs PAYMENT comes
-> from **Cloud Monitoring** when configured (project-wide, authoritative); if it is
-> not configured the app falls back to its own DB call-counter — still real, but it
-> counts only this app's calls. Configure Cloud Monitoring (below) to get Google's
-> project-wide total.
+> `addresses`) and calls `GET /addresses/v3/address` on `apis.usps.com`. An exact
+> match returns the standardized line + ZIP+4 + DPV, which is written to the DB and
+> recorded in the audit log. The token is cached and auto-regenerated before expiry
+> (with a one-retry safety net on 401). If USPS cannot identify an address, the user
+> gets a clear USPS message — there is no third-party fallback. The legacy Web Tools
+> `USPS_USERID` path is used only if the v3 keys are unset. USPS address validation
+> carries **no per-call charge**.
 
 > Generate fresh JWT secrets for a real production deploy:
 > `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`
-
----
-
-## Cloud Monitoring (project-wide usage) — optional but recommended
-
-This makes the Free-tier vs Payment verdict reflect **Google's own project-wide
-call count** instead of this app's local counter. Cloud Monitoring **rejects API
-keys**, so it requires a service account (OAuth). SKU pricing does *not* need
-this — only the project-wide call volume does.
-
-**One-time GCP setup** (in the project that owns the Address Validation API key):
-
-1. **Enable the API** — in the Cloud Console, enable **Cloud Monitoring API**
-   (`monitoring.googleapis.com`) for the project.
-2. **Create a service account** — *IAM & Admin → Service Accounts → Create*.
-   Name it e.g. `statement-usage-reader`. No user access needed.
-3. **Grant the role** — give it exactly **`roles/monitoring.viewer`** (read-only
-   metrics). That is the only role required; nothing can be written or billed.
-4. **Create a JSON key** — *Keys → Add Key → Create new key → JSON*. Download it.
-   Treat it as a secret (never commit it, never send it to the browser).
-
-**Configure the two env vars:**
-
-- `GCP_PROJECT_ID` — the project ID that owns the API key.
-- `GCP_SERVICE_ACCOUNT_JSON` — the entire downloaded JSON key as **one line**.
-  Minify it with:
-  ```bash
-  node -e "process.stdout.write(JSON.stringify(require('./key.json')))"
-  ```
-  Paste the output as the value. (Alternatively, leave this blank and set
-  `GOOGLE_APPLICATION_CREDENTIALS` to a key-file path — the app reads Application
-  Default Credentials automatically.)
-
-**Verify it's live** — after redeploying, open the app, click the Address
-Validation status pill, and confirm the popup's **Sources** row reads
-`Cloud Monitoring · Billing Catalog` (not `App usage counter`). Until then the
-verdict still works — it just uses the local counter and says so honestly.
 
 ---
 

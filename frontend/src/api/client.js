@@ -80,9 +80,14 @@ export const statementsApi = {
   patients: (page = 1, pageSize = 10) =>
     api.get('/statements/patients', { params: { page, pageSize } }).then((r) => r.data),
   pendingPatients: () => api.get('/statements/patients/pending').then((r) => r.data),
+  // Live financial summary (real DB aggregate): total outstanding Patient Responsibility.
+  summary: () => api.get('/statements/summary').then((r) => r.data),
   patientDos: (key) => api.get(`/statements/patients/${encodeURIComponent(key)}/dos`).then((r) => r.data),
   validateAddress: (key) =>
     api.post(`/statements/patients/${encodeURIComponent(key)}/validate-address`).then((r) => r.data),
+  // Edit a patient's address directly; USPS auto-formats it and it is saved.
+  updateAddress: (key, line1, line2) =>
+    api.put(`/statements/patients/${encodeURIComponent(key)}/address`, { line1, line2 }).then((r) => r.data),
   // Live free-tier / SKU usage status for the Address Validation API.
   addressValidationStatus: () =>
     api.get('/statements/address-validation/status').then((r) => r.data),

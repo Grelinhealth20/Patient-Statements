@@ -110,6 +110,13 @@ export async function initSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 
+  // Additive migration: forced first-login password reset. Admin-created accounts and
+  // admin password resets set this to 1 (temp password); the user must set a new
+  // password before accessing anything. Existing rows default to 0 (unaffected).
+  await ensureColumns('users', [
+    { name: 'must_change_password', ddl: 'ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 0 AFTER token_version' },
+  ]);
+
   await seedSuperAdmin();
 }
 

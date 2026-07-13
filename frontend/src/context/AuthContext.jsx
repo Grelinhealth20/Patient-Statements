@@ -56,6 +56,15 @@ export function AuthProvider({ children }) {
     return data.user;
   }, [applySession]);
 
+  // Completes the forced first-login password reset. The backend returns a fresh
+  // session (new tokens with the temp-password flag cleared), so the user proceeds to
+  // the dashboard in real time without signing in again.
+  const completeInitialPassword = useCallback(async (newPassword) => {
+    const { data } = await api.post('/auth/set-initial-password', { newPassword });
+    applySession(data);
+    return data.user;
+  }, [applySession]);
+
   // Restore an existing session on first load.
   useEffect(() => {
     setAuthFailureHandler(() => {
@@ -87,6 +96,8 @@ export function AuthProvider({ children }) {
     login,
     logout,
     setUser,
+    completeInitialPassword,
+    mustChangePassword: !!user?.mustChangePassword,
     isSuperAdmin: user?.role === 'super_admin',
   };
 

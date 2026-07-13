@@ -1,9 +1,8 @@
 import { getPool } from '../config/db.js';
 import { env } from '../config/env.js';
 import { writeAudit } from '../config/initDb.js';
-import { buildApiStatus } from '../utils/addressValidation.js';
 import { resolvePatientAddress, isAnyUspsConfigured, probeUsps } from '../utils/addressResolver.js';
-import { getAddressValidationUsage } from '../utils/billingUsage.js';
+import { UspsValidationError } from '../utils/uspsValidation.js';
 import { recordApiCall, getMonthlyCallCount } from '../utils/apiUsage.js';
 import {
   isS3Configured,
@@ -371,6 +370,54 @@ export async function listPendingPatients(req, res, next) {
   }
 }
 
+/* --------------------------------------------------- GET /summary (financials) */
+
+/**
+ * Live financial summary for the dashboard. Returns the REAL total of outstanding
+ * Patient Responsibility across all of this user's dates of service, computed by
+ * summing the `patientResponsibility` amount stored on each DOS.
+ *
+ * Amounts are stored as free-form strings (e.g. "$23.85 "), so each value is stripped
+ * of everything except digits, a decimal point and a leading minus — exactly matching
+ * the client's money() parser — then summed in the database (fast, exact, no rounding
+ * drift). Nothing is fabricated: rows with no amount contribute nothing. Recomputed on
+ * every call, so it is always current with the imported data.
+ *
+ * NOTE: the cleaned value is wrapped in CONCAT('', …) before CAST — casting a
+ * REGEXP_REPLACE result straight to DECIMAL drops the fraction in MySQL 8, so this
+ * forces a fresh string and preserves the cents (verified against an independent sum).
+ */
+export async function financialSummary(req, res, next) {
+  try {
+    const userId = req.user.id;
+    const pool = getPool();
+    const [[row]] = await pool.query(
+      `SELECT
+         COALESCE(SUM(
+           CAST(CONCAT('', NULLIF(REGEXP_REPLACE(
+             JSON_UNQUOTE(JSON_EXTRACT(data, '$.patientResponsibility')), '[^0-9.-]', ''
+           ), '')) AS DECIMAL(18,2))
+         ), 0) AS outstanding,
+         COUNT(*) AS dosCount,
+         COALESCE(SUM(
+           JSON_UNQUOTE(JSON_EXTRACT(data, '$.patientResponsibility')) REGEXP '[0-9]'
+         ), 0) AS dosWithAmount
+       FROM statement_dos
+       WHERE user_id = :userId`,
+      { userId }
+    );
+    return res.json({
+      patientResponsibilityOutstanding: Number(row.outstanding || 0),
+      currency: 'USD',
+      dosCount: Number(row.dosCount || 0),
+      dosWithAmount: Number(row.dosWithAmount || 0),
+      computedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 /* ----------------------------------------------- GET /patients/:key/dos */
 
 /** Every DOS line for one patient (for the expandable table detail). */
@@ -405,12 +452,12 @@ export async function listPatientDos(req, res, next) {
 /* ------------------------------- POST /patients/:key/validate-address */
 
 /**
- * Validate one patient's mailing address with the Google Address Validation API
- * and, on success, persist the standardized address across ALL of that patient's
- * DOS rows so every future statement uses the corrected address.
+ * Validate one patient's mailing address with USPS (the sole validator) and, on
+ * success, persist the standardized address across ALL of that patient's DOS rows so
+ * every future statement uses the corrected address.
  *
  * The existing patient address (patientAddress1 + patientAddress2) is the input.
- * The Google API key stays server-side; the browser only sees the result.
+ * USPS credentials stay server-side; the browser only sees the result.
  */
 export async function validatePatientAddress(req, res, next) {
   try {
@@ -443,12 +490,11 @@ export async function validatePatientAddress(req, res, next) {
       return res.status(400).json({ message: 'This patient has no address on file to validate.' });
     }
 
-    // Validate the address in real time: USPS is the PRIMARY source of truth; Google
-    // is used only as a backup when USPS cannot identify it accurately.
-    const { validated, provider, apiStatus, billable } = await resolvePatientAddress({ line1, line2 });
-    // Count usage per provider. Only the Google backup is billable, so only that
-    // counter feeds the free-tier verdict; USPS calls are tracked separately (free).
-    await recordApiCall(billable ? 'address_validation' : 'usps_validation');
+    // Validate the address in real time. USPS is the sole source of truth; if it
+    // cannot identify the address, resolvePatientAddress throws (handled below).
+    const { validated, provider, apiStatus } = await resolvePatientAddress({ line1, line2 });
+    // Track this month's USPS validation volume (free; for visibility only).
+    await recordApiCall('usps_validation');
     if (!validated.line1 && !validated.line2) {
       return res.status(422).json({ message: 'The address could not be validated.' });
     }
@@ -473,7 +519,7 @@ export async function validatePatientAddress(req, res, next) {
           l1: validated.line1,
           l2: validated.line2,
           validatedAt: new Date().toISOString(),
-          provider,                          // 'usps' (primary) or 'google' (backup)
+          provider,                          // always 'usps'
           verdictText: validated.verdictText || '',
           userId,
           key,
@@ -505,19 +551,150 @@ export async function validatePatientAddress(req, res, next) {
         hasInferred: validated.hasInferred,
         verdictText: validated.verdictText,
       },
-      provider,             // 'usps' (primary) or 'google' (backup)
+      provider,             // always 'usps'
       updatedRows,
       api: apiStatus,
     });
   } catch (err) {
-    // Address-validation failures carry their own HTTP status; surface the message.
-    // For a billing-disabled key, include the accurate API status so the client
-    // popup can report the free/no-billing plan rather than a generic error.
-    if (err && err.name === 'AddressValidationError') {
-      const body = { message: err.message, code: err.code || undefined };
-      if (err.code === 'BILLING_DISABLED') body.api = buildApiStatus('billing_disabled');
-      return res.status(err.status || 502).json(body);
+    // USPS validation failures carry a machine-readable code and a clear message.
+    // Surface them directly so the user sees exactly why the address didn't validate
+    // (not found, unconfirmed, insufficient input, USPS unavailable, etc.).
+    if (err instanceof UspsValidationError) {
+      const status = err.code === 'NOT_CONFIGURED' ? 503
+        : err.code === 'INSUFFICIENT_INPUT' ? 400
+          : (err.code === 'NOT_FOUND' || err.code === 'UNCONFIRMED') ? 422
+            : err.code === 'TIMEOUT' ? 504
+              : 502;
+      return res.status(status).json({
+        message: uspsUserMessage(err),
+        code: err.code || undefined,
+        provider: 'usps',
+      });
     }
+    next(err);
+  }
+}
+
+/** Turn a USPS error code into a clear, user-facing sentence. */
+function uspsUserMessage(err) {
+  switch (err.code) {
+    case 'NOT_FOUND':
+      return 'USPS could not find this address. Please check the street, city, state and ZIP and try again.';
+    case 'UNCONFIRMED':
+      return 'USPS could not confirm this address is deliverable. Please verify the details (including any apartment/suite).';
+    case 'INSUFFICIENT_INPUT':
+      return 'Not enough address detail to validate. A street plus state and (city or ZIP) are required.';
+    case 'TIMEOUT':
+      return 'USPS address validation timed out. Please try again.';
+    case 'NOT_CONFIGURED':
+      return 'USPS address validation is not configured on the server.';
+    default:
+      return err.message || 'USPS could not validate this address.';
+  }
+}
+
+/* ------------------------------- PUT /patients/:key/address (edit + auto-format) */
+
+/**
+ * Directly edit a patient's mailing address from the UI. The user-supplied lines are
+ * run through USPS in real time and, on success, the STANDARDIZED address (properly
+ * formatted, ZIP+4, DPV) is saved to every DOS row for the patient and marked
+ * verified. If USPS cannot identify the edited address, the user's raw input is still
+ * saved (so the edit is never lost) and the patient is marked unverified with a clear
+ * note. Unlike the one-time Validate action, editing may be repeated.
+ */
+export async function updatePatientAddress(req, res, next) {
+  try {
+    const userId = req.user.id;
+    const key = norm(req.params.key);
+    if (!key) return res.status(400).json({ message: 'A patient must be specified.' });
+
+    const line1 = s(req.body?.line1);
+    const line2 = s(req.body?.line2);
+    if (!line1 && !line2) {
+      return res.status(400).json({ message: 'Please enter an address to save.' });
+    }
+
+    const pool = getPool();
+    const [[exists]] = await pool.query(
+      `SELECT 1 AS ok FROM statement_dos WHERE user_id = :userId AND patient_key = :key LIMIT 1`,
+      { userId, key }
+    );
+    if (!exists) return res.status(404).json({ message: 'Patient not found.' });
+
+    // Auto-format via USPS. On success save the standardized address + mark verified;
+    // on a USPS miss keep the raw edit so nothing is lost (unverified).
+    let saved = { line1, line2 };
+    let validated = false;
+    let provider = null;
+    let verdictText = null;
+    let apiStatus = null;
+    let uspsError = null;
+    try {
+      const r = await resolvePatientAddress({ line1, line2 });
+      saved = { line1: r.validated.line1, line2: r.validated.line2 };
+      validated = true;
+      provider = r.provider;                 // 'usps'
+      verdictText = r.validated.verdictText || '';
+      apiStatus = r.apiStatus;
+      await recordApiCall('usps_validation');
+    } catch (err) {
+      if (!(err instanceof UspsValidationError)) throw err;
+      uspsError = uspsUserMessage(err);       // keep the raw edit; save unverified
+    }
+
+    // Persist to every DOS row for this patient, atomically.
+    const conn = await pool.getConnection();
+    let updatedRows = 0;
+    try {
+      await conn.beginTransaction();
+      const [result] = await conn.query(
+        `UPDATE statement_dos
+            SET data = JSON_SET(data,
+                  '$.patientAddress1', :l1,
+                  '$.patientAddress2', :l2,
+                  '$.addressValidated', :validatedAt,
+                  '$.addressValidationProvider', :provider,
+                  '$.addressValidationVerdict', :verdictText)
+          WHERE user_id = :userId AND patient_key = :key`,
+        {
+          l1: saved.line1,
+          l2: saved.line2,
+          validatedAt: validated ? new Date().toISOString() : null,
+          provider: validated ? provider : null,
+          verdictText: validated ? verdictText : null,
+          userId,
+          key,
+        }
+      );
+      updatedRows = result.affectedRows || 0;
+      await conn.commit();
+    } catch (err) {
+      try { await conn.rollback(); } catch { /* ignore */ }
+      throw err;
+    } finally {
+      conn.release();
+    }
+
+    await writeAudit({
+      actorId: userId,
+      action: 'statements.editAddress',
+      detail: `patient=${key} rows=${updatedRows} validated=${validated} saved="${[saved.line1, saved.line2].filter(Boolean).join(', ')}"`,
+    });
+
+    return res.json({
+      saved,
+      validated,
+      provider,
+      verdictText,
+      updatedRows,
+      uspsError,
+      message: validated
+        ? 'Address formatted by USPS and saved.'
+        : (uspsError ? `Saved your address. ${uspsError}` : 'Address saved (not USPS-verified).'),
+      api: apiStatus,
+    });
+  } catch (err) {
     next(err);
   }
 }
@@ -525,64 +702,37 @@ export async function validatePatientAddress(req, res, next) {
 /* ------------------------------ GET /address-validation/status (live provider) */
 
 /**
- * Live address-validation provider status for the client pill/popup.
- *
- * PRIMARY provider is USPS Web Tools (free, real-time) when configured — its verdict
- * is FREE (USPS Web Tools address validation carries no per-call charge). The Google
- * Address Validation billing/free-tier detail (real Cloud Monitoring volume + Cloud
- * Billing Catalog SKU) is reported as the BACKUP, since Google now only runs when
- * USPS cannot identify an address. Nothing is fabricated: figures that cannot be
- * sourced are null and the verdict degrades to UNKNOWN honestly.
+ * Live address-validation provider status for the client pill/popup. USPS is the ONLY
+ * validator; its health is probed live so the pill reflects what USPS is ACTUALLY
+ * doing right now, never a fabricated state. USPS address validation is free of charge.
  */
 export async function addressValidationStatus(req, res, next) {
   try {
-    // Google backup usage (real): app counter feeds the free-tier verdict when Cloud
-    // Monitoring isn't configured. Also surface this app's USPS call count (free).
-    const [googleCalls, uspsCalls] = await Promise.all([
-      getMonthlyCallCount('address_validation').catch(() => null),
-      getMonthlyCallCount('usps_validation').catch(() => null),
-    ]);
-    const backup = await getAddressValidationUsage({ appCalls: googleCalls });
-    backup.role = 'backup';
+    const uspsCalls = await getMonthlyCallCount('usps_validation').catch(() => null);
 
-    // Truthful provider status: probe USPS health so the pill reflects what is ACTUALLY
-    // serving, not merely whether credentials are set.
     const health = isAnyUspsConfigured()
       ? await probeUsps().catch((e) => ({ configured: true, healthy: false, reason: e.message }))
-      : { configured: false, healthy: false };
+      : { configured: false, healthy: false, reason: 'USPS is not configured.' };
 
-    let api;
-    if (health.healthy) {
-      // USPS is live → it is the primary, free validator.
-      api = {
-        provider: health.path === 'v3' ? 'USPS Addresses API v3' : 'USPS Web Tools (Address Validation)',
-        primary: 'usps',
-        uspsPath: health.path,
-        uspsHealthy: true,
-        live: true,
-        verdict: 'FREE', // USPS Web Tools address validation is free of charge
-        planLabel: 'USPS Web Tools — free (no per-call charge)',
-        uspsCallsThisMonth: uspsCalls,
-        note: 'USPS is the primary validator (free, real-time). Google Address Validation runs only as a backup when USPS cannot identify an address; its live billing/free-tier detail is shown below.',
-        checkedAt: health.checkedAt || new Date().toISOString(),
-        backup,
-      };
-    } else {
-      // USPS not configured OR configured-but-failing → Google is really doing the work.
-      // Report Google's live billing/free-tier status as the active provider, honestly.
-      api = {
-        ...backup,
-        role: 'active',
-        primary: 'google',
-        uspsConfigured: !!health.configured,
-        uspsHealthy: false,
-        uspsReason: health.reason || null,
-        uspsCallsThisMonth: uspsCalls,
-        note: health.configured
-          ? `USPS is configured but not serving right now (${health.reason || 'unavailable'}), so Google Address Validation is the active validator. ` + (backup.reason || '')
-          : 'USPS is not configured, so Google Address Validation is the active validator. ' + (backup.reason || ''),
-      };
-    }
+    const providerName = health.path === 'v3' ? 'USPS Addresses API v3' : 'USPS Web Tools (Address Validation)';
+    const api = {
+      provider: providerName,
+      primary: 'usps',
+      uspsPath: health.path || null,
+      configured: !!health.configured,
+      uspsHealthy: !!health.healthy,
+      live: !!health.healthy,
+      verdict: 'FREE',            // USPS address validation carries no per-call charge
+      planLabel: 'USPS — free (no per-call charge)',
+      uspsCallsThisMonth: uspsCalls,
+      reason: health.healthy ? null : (health.reason || null),
+      note: health.healthy
+        ? 'USPS is the sole address validator (free, real-time).'
+        : (health.configured
+          ? `USPS is configured but not serving right now (${health.reason || 'unavailable'}).`
+          : 'USPS address validation is not configured on the server.'),
+      checkedAt: health.checkedAt || new Date().toISOString(),
+    };
 
     return res.json({ api });
   } catch (err) {

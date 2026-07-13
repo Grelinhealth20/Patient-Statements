@@ -10,19 +10,18 @@ import { env } from '../config/env.js';
  * and returns a DPV (Delivery Point Validation) verdict. Every call is bounded by an
  * abort-controller timeout so a slow/hung upstream can never tie up a request thread.
  *
- * This module is the drop-in replacement for the Google Address Validation client:
- * `validateAddressUSPS()` returns the SAME normalized shape as the Google
- * `extractValidatedAddress()` (line1/line2/formatted/complete/verdictText…), so the
- * controller and the DB-update path are provider-agnostic. When USPS cannot identify
- * an address accurately it throws `UspsValidationError`; the resolver then falls back
- * to Google as a backup.
+ * `validateAddressUSPS()` (legacy Web Tools path) returns a normalized shape
+ * (line1/line2/formatted/complete/verdictText…) so the controller and DB-update path
+ * are provider-agnostic. When USPS cannot identify an address accurately it throws
+ * `UspsValidationError`, which the caller surfaces to the user. USPS is the sole
+ * validator — there is no fallback provider.
  */
 
 const DEFAULT_TIMEOUT_MS = 10000;
 
 const s = (v) => (v == null ? '' : String(v)).trim();
 
-/** Structured error signalling that USPS could not accurately validate → try Google. */
+/** Structured error signalling that USPS could not accurately validate the address. */
 export class UspsValidationError extends Error {
   constructor(message, code = '') {
     super(message);
@@ -134,9 +133,8 @@ function dpvVerdict(dpv, hasZip4) {
 
 /**
  * Validate a patient's address with USPS. Returns the normalized standardized
- * address (same shape as the Google extractor) on success, or throws
- * `UspsValidationError` when USPS cannot accurately identify it (so the caller can
- * fall back to Google).
+ * address on success, or throws `UspsValidationError` when USPS cannot accurately
+ * identify it (the caller surfaces the message; there is no fallback provider).
  *
  * @param {{line1?: string, line2?: string}} input  The app's two address lines.
  * @param {object} [opts]
@@ -244,7 +242,7 @@ export async function validateAddressUSPS({ line1, line2 } = {}, opts = {}) {
  * address so the client pill reflects whether USPS is ACTUALLY serving right now —
  * not merely whether a USERID is present. A configured-but-failing account (e.g. the
  * Address APIs not activated) is reported as unhealthy with the real reason, so the
- * UI never claims USPS is primary when Google is really doing the work.
+ * UI shows USPS as unavailable rather than falsely claiming it is serving.
  */
 let _health = { at: 0, healthy: false, reason: null };
 const HEALTH_TTL_MS = 5 * 60 * 1000;
@@ -279,7 +277,7 @@ export function buildUspsStatus(validated = null, providerLabel = 'USPS Web Tool
     plan: 'free',
     planLabel: 'USPS Web Tools — free (no per-call charge)',
     verdict: 'FREE',
-    note: 'Validated by the USPS Address Validation API (primary). USPS Web Tools address validation is provided free of charge; Google is used only as a backup when USPS cannot identify an address.',
+    note: 'Validated by the USPS Address Validation API. USPS address validation is provided free of charge and is the sole validator.',
     dpv: validated?.dpv || null,
     zipPlus4: validated?.zipPlus4 ?? null,
     checkedAt: new Date().toISOString(),

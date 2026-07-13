@@ -8,12 +8,13 @@ import {
   resetPassword,
   deleteUser,
 } from '../controllers/adminController.js';
-import { requireAuth, requireSuperAdmin } from '../middleware/auth.js';
+import { requireAuth, requireSuperAdmin, blockIfPasswordChangeRequired } from '../middleware/auth.js';
 
 const router = Router();
 
-// Every admin route requires an authenticated super administrator.
-router.use(requireAuth, requireSuperAdmin);
+// Every admin route requires an authenticated super administrator whose password is
+// already set (a temp-password account must reset it first).
+router.use(requireAuth, blockIfPasswordChangeRequired, requireSuperAdmin);
 
 router.get('/stats', stats);
 router.get('/users', listUsers);

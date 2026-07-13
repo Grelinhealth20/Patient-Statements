@@ -192,6 +192,14 @@ function DownloadIcon() {
   );
 }
 
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" width="13" height="13" aria-hidden="true">
+      <path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+    </svg>
+  );
+}
+
 /** Inline processing spinner. `dark` uses the brand color (for light buttons). */
 function Spinner({ dark = false }) {
   return <span className={`inline-spinner${dark ? ' dark' : ''}`} aria-hidden="true" />;
@@ -206,52 +214,33 @@ const IconLayers = () => <Svg><path d="M12 2l9 5-9 5-9-5 9-5z" /><path d="M3 12l
 const IconClock = () => <Svg><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></Svg>;
 const IconCheck = () => <Svg><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><path d="M22 4L12 14.01l-3-3" /></Svg>;
 const IconUpload = () => <Svg strokeWidth="1.7"><path d="M12 16V4M8 8l4-4 4 4" /><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" /></Svg>;
+const IconDollar = () => <Svg><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></Svg>;
 
-/** Human labels for which provider verified an address (USPS primary / Google backup). */
-function providerLabel(p) {
-  if (p === 'usps') return 'USPS Address Validation (primary · free)';
-  if (p === 'google') return 'Google Address Validation (backup)';
-  return 'address validation';
+/** Human label for the address validator (USPS is the only provider). */
+function providerLabel() {
+  return 'USPS Address Validation';
 }
-function providerShort(p) {
-  if (p === 'usps') return 'USPS';
-  if (p === 'google') return 'Google';
-  return 'verified';
+function providerShort() {
+  return 'USPS';
 }
 
-/** Build a descriptive tooltip for the Address Validation provider pill. */
+/** Build a descriptive tooltip for the USPS address-validation pill. */
 function tierTitle(s) {
-  if (!s) return 'Checking address validation provider…';
-  const parts = [];
-  if (s.primary === 'usps') {
-    parts.push(`${s.provider || 'USPS Address Validation'} — primary · real-time · free (no per-call charge)`);
-    if (s.uspsCallsThisMonth != null) parts.push(`${Number(s.uspsCallsThisMonth).toLocaleString()} USPS validations this month`);
-    const b = s.backup;
-    if (b?.sku?.name) parts.push(`Backup: ${b.sku.name}${b.sku.unitPrice != null ? ` ($${b.sku.unitPrice}/call beyond free)` : ''}`);
-  } else {
-    if (s.sku?.name) parts.push(s.sku.name);
-    if (s.freeMonthly != null) {
-      parts.push(s.callsThisMonth != null
-        ? `${Number(s.callsThisMonth).toLocaleString()} / ${Number(s.freeMonthly).toLocaleString()} free calls used this month`
-        : `${Number(s.freeMonthly).toLocaleString()} free calls/month`);
-    }
-    if (s.sku?.unitPrice != null) parts.push(`$${s.sku.unitPrice}/call beyond free`);
-  }
-  if (s.reason) parts.push(s.reason);
-  return parts.join(' · ') || 'Address validation provider';
+  if (!s) return 'Checking USPS address validation…';
+  const parts = [`${s.provider || 'USPS Address Validation'} — real-time · free (no per-call charge)`];
+  if (s.uspsCallsThisMonth != null) parts.push(`${Number(s.uspsCallsThisMonth).toLocaleString()} validations this month`);
+  if (!s.uspsHealthy && s.reason) parts.push(`Not serving: ${s.reason}`);
+  return parts.join(' · ');
 }
 
-/** Live address-validation provider pill: USPS (primary) / Free Tier / Paid / Unknown. */
+/** Live USPS address-validation pill: Free (serving) / Unavailable. */
 function TierPill({ status }) {
   if (!status) {
     return <span className="tier-pill tier-loading" title={tierTitle(null)}>Checking…</span>;
   }
-  const v = status.verdict;
-  const cls = v === 'FREE' ? 'tier-free' : v === 'PAYMENT' ? 'tier-paid' : 'tier-unknown';
-  // With USPS primary the pill names the provider; otherwise it shows the Google tier.
-  const label = status.primary === 'usps'
-    ? 'USPS · Free'
-    : v === 'FREE' ? 'Free Tier' : v === 'PAYMENT' ? 'Paid' : 'Unknown';
+  const healthy = !!status.uspsHealthy;
+  const cls = healthy ? 'tier-free' : 'tier-unknown';
+  const label = healthy ? 'USPS · Free' : 'USPS · Unavailable';
   return (
     <span className={`tier-pill ${cls}`} title={tierTitle(status)}>
       <span className="tier-dot" aria-hidden="true" />{label}
@@ -260,8 +249,31 @@ function TierPill({ status }) {
 }
 
 /** One patient row plus its expandable list of dates of service. */
-function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, downloading, tier }) {
+function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, downloading, tier, onSaveAddress, savingAddress }) {
   const hasFile = !!p.lastFileName && !!p.lastStatementId;
+  const [editing, setEditing] = useState(false);
+  const [l1, setL1] = useState('');
+  const [l2, setL2] = useState('');
+  const saving = savingAddress === p.key;
+
+  const openEditor = (e) => {
+    e.stopPropagation();
+    setL1(p.patientAddress?.line1 || '');
+    setL2(p.patientAddress?.line2 || '');
+    setEditing(true);
+  };
+  const cancelEdit = (e) => { e?.stopPropagation(); setEditing(false); };
+  const saveEdit = async (e) => {
+    e?.stopPropagation();
+    const ok = await onSaveAddress(p.key, l1.trim(), l2.trim());
+    if (ok) setEditing(false);
+  };
+  const onKey = (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); saveEdit(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancelEdit(); }
+  };
+
   return (
     <>
       <tr
@@ -277,26 +289,59 @@ function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, d
         <td><strong>{p.patientName || '—'}</strong></td>
         <td className="mono">{p.accountNumber || '—'}</td>
         <td><AddressCell addr={p.officeAddress} /></td>
-        <td>
-          <AddressCell addr={p.patientAddress} />
-          {p.addressValidated ? (
-            <span
-              className={`addr-verified prov-${p.addressValidationProvider || 'unknown'}`}
-              title={`Address verified via ${providerLabel(p.addressValidationProvider)}${p.addressValidationVerdict ? ` — ${p.addressValidationVerdict}` : ''}${p.addressValidatedAt ? ` on ${fmtDate(p.addressValidatedAt)}` : ''} (one-time per patient)`}
-            >
-              <ShieldCheckIcon /> Verified · {providerShort(p.addressValidationProvider)}
-            </span>
+        <td onClick={(e) => { if (editing) e.stopPropagation(); }}>
+          {editing ? (
+            <div className="addr-edit" onClick={(e) => e.stopPropagation()}>
+              <input
+                className="addr-edit-input" value={l1} autoFocus disabled={saving}
+                placeholder="Street address (e.g. 6406 Ivy Lane STE 100)"
+                onChange={(e) => setL1(e.target.value)} onKeyDown={onKey}
+                aria-label="Patient address line 1"
+              />
+              <input
+                className="addr-edit-input" value={l2} disabled={saving}
+                placeholder="City, State ZIP (e.g. Greenbelt, MD 20770)"
+                onChange={(e) => setL2(e.target.value)} onKeyDown={onKey}
+                aria-label="Patient address line 2"
+              />
+              <div className="addr-edit-actions">
+                <button className="btn-save-addr" onClick={saveEdit} disabled={saving || (!l1.trim() && !l2.trim())}
+                  title="Format with USPS and save">
+                  {saving ? <span className="btn-inline"><Spinner dark /> Formatting & saving…</span> : <>✓ Save</>}
+                </button>
+                <button className="btn-cancel-addr" onClick={cancelEdit} disabled={saving} title="Discard changes">✕</button>
+              </div>
+              <span className="addr-edit-hint">USPS will standardize the address automatically on save.</span>
+            </div>
           ) : (
-            <button
-              className="btn-validate"
-              disabled={validating}
-              onClick={(e) => { e.stopPropagation(); onValidate(p.key); }}
-              title="Validate & standardize this patient's address — USPS (primary), Google (backup). One-time per patient."
-            >
-              {validating
-                ? <span className="btn-inline"><Spinner dark /> Validating…</span>
-                : <><ShieldCheckIcon /> Validate</>}
-            </button>
+            <>
+              <AddressCell addr={p.patientAddress} />
+              <div className="addr-actions">
+                <button className="btn-edit-addr" onClick={openEditor}
+                  title="Edit this patient's address — USPS formats & saves it automatically">
+                  <PencilIcon /> Edit
+                </button>
+                {p.addressValidated ? (
+                  <span
+                    className={`addr-verified prov-${p.addressValidationProvider || 'unknown'}`}
+                    title={`Address verified via ${providerLabel(p.addressValidationProvider)}${p.addressValidationVerdict ? ` — ${p.addressValidationVerdict}` : ''}${p.addressValidatedAt ? ` on ${fmtDate(p.addressValidatedAt)}` : ''}`}
+                  >
+                    <ShieldCheckIcon /> Verified · {providerShort(p.addressValidationProvider)}
+                  </span>
+                ) : (
+                  <button
+                    className="btn-validate"
+                    disabled={validating}
+                    onClick={(e) => { e.stopPropagation(); onValidate(p.key); }}
+                    title="Validate & standardize this patient's address with USPS (free, real-time)."
+                  >
+                    {validating
+                      ? <span className="btn-inline"><Spinner dark /> Validating…</span>
+                      : <><ShieldCheckIcon /> Validate</>}
+                  </button>
+                )}
+              </div>
+            </>
           )}
         </td>
         <td><TierPill status={tier} /></td>
@@ -332,7 +377,8 @@ function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, d
             {ex.loading ? (
               <div style={{ padding: '12px 16px', color: 'var(--muted, #6E7D91)' }}>Loading dates of service…</div>
             ) : (
-              <table className="data-table" style={{ margin: 0, background: 'transparent' }}>
+              <div className="detail-scroll">
+              <table className="data-table detail-table" style={{ margin: 0, background: 'transparent' }}>
                 <thead>
                   <tr>
                     {DETAIL_KEYS.map((k) => (
@@ -360,6 +406,7 @@ function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, d
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </td>
         </tr>
@@ -369,90 +416,53 @@ function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, d
 }
 
 const nfmt = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
-const priceFmt = (p, cur, unit) => {
-  if (p == null) return null;
-  const c = cur === 'USD' ? '$' : `${cur || ''} `;
-  return `${c}${Number(p).toLocaleString('en-US', { maximumFractionDigits: 6 })}${unit ? ` / ${unit}` : ''}`;
-};
 
 /**
- * Real-time popup reporting the live Google Address Validation API free-tier / SKU
- * status. The verdict is driven by REAL data: month-to-date call volume from Cloud
- * Monitoring vs. the SKU's free threshold from the Cloud Billing Catalog. When those
- * sources aren't configured/available it reports UNKNOWN honestly — nothing is
- * invented. The base `billingEnabled` fact comes from the live validate call itself.
+ * Real-time popup reporting live USPS address-validation status. USPS is the sole
+ * validator and is free of charge; the DPV verdict and ZIP+4 come from the live call.
  */
 function ApiStatusModal({ status, onClose }) {
   if (!status) return null;
-  const usage = status.usage || null;
-  // Prefer the usage-derived verdict (FREE/PAYMENT from real consumption); fall back
-  // to the validate-call billing verdict; else UNKNOWN.
-  const isUsps = status.provider ? /usps/i.test(status.provider) : status.plan === 'free';
-  const verdict = usage?.verdict || status.verdict || 'UNKNOWN';
-  const cls = verdict === 'FREE' ? 'v-free' : verdict === 'PAYMENT' ? 'v-payment' : 'v-unknown';
-  const label = isUsps ? 'USPS · FREE' : verdict === 'FREE' ? 'FREE TIER' : verdict === 'PAYMENT' ? 'PAYMENT' : 'UNKNOWN';
-  const sub = isUsps
-    ? 'Validated by USPS (primary) — free, no per-call charge'
-    : verdict === 'FREE'
-      ? 'Within the SKU’s free monthly allowance — not charged'
-      : verdict === 'PAYMENT'
-        ? 'Free monthly allowance exhausted — usage is billed'
-        : (usage && !usage.configured
-          ? 'Live usage monitoring not configured'
-          : (status.planLabel || 'Live usage could not be determined'));
+  const healthy = status.uspsHealthy != null ? !!status.uspsHealthy : (status.live !== false);
+  const cls = healthy ? 'v-free' : 'v-unknown';
+  const label = healthy ? 'USPS · FREE' : 'USPS · UNAVAILABLE';
+  const sub = healthy
+    ? 'Validated by USPS — free, no per-call charge'
+    : (status.reason || status.note || 'USPS is not serving right now');
 
-  const sku = usage?.sku || null;
-  const priceStr = sku ? priceFmt(sku.unitPrice, sku.currency, sku.usageUnit) : null;
-  const when = (usage?.checkedAt || status.checkedAt) ? new Date(usage?.checkedAt || status.checkedAt) : new Date();
+  const when = status.checkedAt ? new Date(status.checkedAt) : new Date();
   const whenStr = isNaN(when) ? '' : when.toLocaleString();
-  const live = usage?.live ?? status.live;
+  const live = status.live ?? healthy;
 
   return (
-    <div className="api-modal-overlay" role="dialog" aria-modal="true" aria-label="Address Validation API status" onClick={onClose}>
+    <div className="api-modal-overlay" role="dialog" aria-modal="true" aria-label="USPS Address Validation status" onClick={onClose}>
       <div className="api-modal" onClick={(e) => e.stopPropagation()}>
         <button className="api-modal-x" onClick={onClose} aria-label="Close">×</button>
         <div className="api-modal-head">
           <span className={`api-live-dot${live ? ' on' : ''}`} aria-hidden="true" />
           <div>
-            <h3>Address Validation API</h3>
-            <p className="api-modal-provider">{status.provider || 'Google Address Validation API'}</p>
+            <h3>USPS Address Validation</h3>
+            <p className="api-modal-provider">{status.provider || 'USPS Addresses API v3'}</p>
           </div>
         </div>
 
         <div className={`api-verdict ${cls}`}>
-          <span className="api-verdict-label">Billing status</span>
+          <span className="api-verdict-label">Status</span>
           <span className="api-verdict-value">{label}</span>
           <span className="api-verdict-sub">{sub}</span>
         </div>
 
-        {/* Live SKU pricing + month-to-date usage — each row shown only when the
-            underlying figure is really available (SKU pricing works with the API key;
-            call volume needs the monitoring service account). */}
-        {usage && (sku || usage.callsThisMonth != null || usage.freeMonthly != null) && (
-          <dl className="api-facts">
-            {sku?.name && <div><dt>SKU</dt><dd>{sku.name}{sku.edition ? ` · ${sku.edition}` : ''}</dd></div>}
-            {priceStr && <div><dt>Unit price (beyond free)</dt><dd>{priceStr}</dd></div>}
-            {usage.freeMonthly != null && <div><dt>Free monthly allowance</dt><dd>{nfmt(usage.freeMonthly)}</dd></div>}
-            {usage.callsThisMonth != null && <div><dt>Calls this month</dt><dd>{nfmt(usage.callsThisMonth)}</dd></div>}
-            {usage.remainingFree != null && <div><dt>Free calls remaining</dt><dd>{nfmt(usage.remainingFree)}</dd></div>}
-            <div><dt>Sources</dt><dd>{[usage.usageSource === 'cloud_monitoring' && 'Cloud Monitoring', usage.usageSource === 'app_counter' && 'App usage counter', usage.pricingSource === 'billing_catalog' && 'Billing Catalog', usage.pricingSource === 'operator_override' && 'Operator override'].filter(Boolean).join(' · ') || '—'}</dd></div>
-          </dl>
-        )}
-
-        {/* Base facts from the live validate call. */}
         <dl className="api-facts">
-          <div><dt>Provider</dt><dd>{status.provider || 'Address Validation'}{isUsps ? ' · primary' : status.role === 'backup' ? ' · backup' : ''}</dd></div>
+          <div><dt>Provider</dt><dd>{status.provider || 'USPS Address Validation'}</dd></div>
+          <div><dt>Cost</dt><dd>Free — no per-call charge</dd></div>
           <div><dt>Mode</dt><dd>{live ? 'Live · real-time' : 'Offline'}</dd></div>
           {status.dpv && <div><dt>USPS DPV</dt><dd className="mono">{status.dpv}</dd></div>}
           {status.zipPlus4 != null && <div><dt>ZIP+4</dt><dd>{status.zipPlus4 ? 'Appended' : 'Not available'}</dd></div>}
-          {status.billingEnabled != null && <div><dt>Billing account</dt><dd>{status.billingEnabled ? 'Enabled' : 'Not enabled'}</dd></div>}
-          {status.responseId && <div><dt>Response ID</dt><dd className="mono">{status.responseId}</dd></div>}
+          {status.uspsCallsThisMonth != null && <div><dt>Validations this month</dt><dd>{nfmt(status.uspsCallsThisMonth)}</dd></div>}
           {whenStr && <div><dt>Checked</dt><dd>{whenStr}</dd></div>}
         </dl>
 
-        {(usage?.reason || usage?.notes || status.note) && (
-          <p className="api-modal-note">{usage?.reason || usage?.notes || status.note}</p>
-        )}
+        {status.note && <p className="api-modal-note">{status.note}</p>}
         <button className="btn-primary btn-compact api-modal-ok" onClick={onClose}>Got it</button>
       </div>
     </div>
@@ -469,6 +479,7 @@ export default function StatementHome() {
   const [patients, setPatients] = useState([]);            // current page rows
   const [pagination, setPagination] = useState(null);      // { page, pageSize, total, totalPages }
   const [totals, setTotals] = useState({ patients: 0, dos: 0, pending: 0, generated: 0 });
+  const [summary, setSummary] = useState(null); // live financials { patientResponsibilityOutstanding, ... }
   const [pendingList, setPendingList] = useState([]);      // all pending patients (selector)
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -476,6 +487,7 @@ export default function StatementHome() {
   const [selectedKey, setSelectedKey] = useState('');
   const [generating, setGenerating] = useState('');
   const [validating, setValidating] = useState(''); // patient key being address-validated
+  const [savingAddress, setSavingAddress] = useState(''); // patient key whose edited address is saving
   const [apiStatus, setApiStatus] = useState(null); // live Address Validation API plan status (popup)
   const [tierStatus, setTierStatus] = useState(null); // live billing tier for the table's Tier column
   const [downloading, setDownloading] = useState(''); // patient key whose stored PDF is downloading
@@ -489,6 +501,8 @@ export default function StatementHome() {
       setPatients(data.patients || []);
       setPagination(data.pagination || null);
       setTotals(data.totals || { patients: 0, dos: 0, pending: 0, generated: 0 });
+      // Refresh the live financial summary alongside the table (real-time, non-blocking).
+      statementsApi.summary().then(setSummary).catch(() => {});
       // The backend clamps the page into range; mirror that back into state.
       if (data.pagination && data.pagination.page !== p) setPage(data.pagination.page);
       return data;
@@ -666,23 +680,18 @@ export default function StatementHome() {
     }
   }, [push, refresh]);
 
-  // Validate one patient's address via Google, persist the standardized result,
+  // Validate one patient's address via USPS, persist the standardized result,
   // then refresh so the table (and any open DOS drawer) shows the updated address.
   const onValidate = useCallback(async (key) => {
     if (!key) return;
     setValidating(key);
     try {
-      const { validated, api, provider } = await statementsApi.validateAddress(key);
-      // Surface the live API provider status as a real-time popup. Enrich with the live
-      // provider/usage status (USPS health, or Google SKU + month-to-date usage) so the
-      // popup reflects real state, not a cached guess.
-      const usage = await statementsApi.addressValidationStatus().then((d) => d.api).catch(() => null);
-      if (api || usage) setApiStatus({ ...(api || {}), usage });
-      if (usage) setTierStatus(usage); // keep the table's Tier column current
-      // Label the real provider that served this validation, in real time.
-      const via = provider ? ` via ${providerShort(provider)}` : '';
+      const { validated, api } = await statementsApi.validateAddress(key);
+      // Show the live USPS status popup, and refresh the Tier pill from the live probe.
+      if (api) setApiStatus(api);
+      statementsApi.addressValidationStatus().then((d) => d.api && setTierStatus(d.api)).catch(() => {});
       push(
-        `Address ${validated.complete ? 'confirmed' : 'updated'}${via}: ${validated.formatted}`,
+        `Address ${validated.complete ? 'confirmed' : 'updated'} via USPS: ${validated.formatted}`,
         validated.complete ? 'success' : 'info'
       );
       await refresh();
@@ -694,12 +703,41 @@ export default function StatementHome() {
         return { ...prev, [key]: { ...prev[key], loading: true } };
       });
     } catch (err) {
-      // A billing-disabled key still returns an accurate API status — show it.
+      // USPS failures return a clear message (and provider:'usps'); surface it.
       const api = err?.response?.data?.api;
       if (api) setApiStatus(api);
-      push(err?.response?.data?.message || 'Address validation failed.', 'error');
+      push(err?.response?.data?.message || 'USPS could not validate this address.', 'error');
     } finally {
       setValidating('');
+    }
+  }, [push, refresh]);
+
+  // Save a directly-edited patient address: the backend auto-formats it with USPS and
+  // persists it across all of the patient's DOS rows. Returns true on success so the
+  // row can close its editor. Refreshes the table (and any open drawer) afterward.
+  const onSaveAddress = useCallback(async (key, line1, line2) => {
+    if (!key) return false;
+    if (!line1 && !line2) { push('Please enter an address to save.', 'error'); return false; }
+    setSavingAddress(key);
+    try {
+      const res = await statementsApi.updateAddress(key, line1, line2);
+      if (res.api) setApiStatus(res.api);
+      statementsApi.addressValidationStatus().then((d) => d.api && setTierStatus(d.api)).catch(() => {});
+      push(res.message || 'Address saved.', res.validated ? 'success' : 'info');
+      await refresh();
+      setExpanded((prev) => {
+        if (!prev[key]?.open) return prev;
+        statementsApi.patientDos(key)
+          .then(({ dos }) => setExpanded((p) => ({ ...p, [key]: { open: true, loading: false, dos: dos || [] } })))
+          .catch(() => {});
+        return { ...prev, [key]: { ...prev[key], loading: true } };
+      });
+      return true;
+    } catch (err) {
+      push(err?.response?.data?.message || 'Could not save the address.', 'error');
+      return false;
+    } finally {
+      setSavingAddress('');
     }
   }, [push, refresh]);
 
@@ -781,6 +819,12 @@ export default function StatementHome() {
           <div className="kpi k-green">
             <div className="kpi-top"><span className="kpi-label">Generated</span><span className="kpi-ic"><IconCheck /></span></div>
             <span className="kpi-value">{totals.generated}</span>
+          </div>
+          <div className="kpi k-teal" title={summary
+            ? `Sum of Patient Responsibility across ${summary.dosWithAmount} of ${summary.dosCount} dates of service (live from the database)`
+            : 'Calculating outstanding patient responsibility…'}>
+            <div className="kpi-top"><span className="kpi-label">Patient Resp. Outstanding</span><span className="kpi-ic"><IconDollar /></span></div>
+            <span className="kpi-value">{summary ? money(summary.patientResponsibilityOutstanding) : '—'}</span>
           </div>
         </div>
       </header>
@@ -895,7 +939,7 @@ export default function StatementHome() {
                 <tr><td colSpan={genColSpan} className="table-empty">No patients yet — upload a statement file above to populate this table.</td></tr>
               ) : (
                 patients.map((p) => (
-                  <PatientRow key={p.key} p={p} ex={expanded[p.key]} onToggle={() => loadDos(p.key)} onValidate={onValidate} validating={validating === p.key} onDownloadFile={downloadStored} downloading={downloading === p.key} tier={tierStatus} />
+                  <PatientRow key={p.key} p={p} ex={expanded[p.key]} onToggle={() => loadDos(p.key)} onValidate={onValidate} validating={validating === p.key} onDownloadFile={downloadStored} downloading={downloading === p.key} tier={tierStatus} onSaveAddress={onSaveAddress} savingAddress={savingAddress} />
                 ))
               )}
             </tbody>

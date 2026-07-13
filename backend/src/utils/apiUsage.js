@@ -22,7 +22,7 @@ export function currentBillingPeriod(now = new Date()) {
 }
 
 /** Atomically increment this month's counter for a metric. Never throws to a caller. */
-export async function recordApiCall(metric = 'address_validation', n = 1) {
+export async function recordApiCall(metric = 'usps_validation', n = 1) {
   try {
     const pool = getPool();
     await pool.query(
@@ -37,7 +37,7 @@ export async function recordApiCall(metric = 'address_validation', n = 1) {
 }
 
 /** Read this month's call count for a metric (0 when none recorded yet). */
-export async function getMonthlyCallCount(metric = 'address_validation') {
+export async function getMonthlyCallCount(metric = 'usps_validation') {
   const pool = getPool();
   const [[row]] = await pool.query(
     `SELECT calls FROM api_usage_monthly WHERE metric = :metric AND period = :period`,

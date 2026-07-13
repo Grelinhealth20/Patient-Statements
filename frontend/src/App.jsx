@@ -7,9 +7,17 @@ import StatementDashboard from './pages/StatementDashboard.jsx';
 import StatementHome from './pages/StatementHome.jsx';
 import StatementEngine from './pages/StatementEngine.jsx';
 import AdminDashboard from './pages/AdminDashboard.jsx';
+import ForcePasswordReset from './pages/ForcePasswordReset.jsx';
 
 export default function App() {
-  const { user, isSuperAdmin } = useAuth();
+  const { user, isSuperAdmin, mustChangePassword } = useAuth();
+
+  // Forced first-login reset: a signed-in user carrying a temporary password must set a
+  // new one before anything else. The backend also blocks all protected APIs until then,
+  // so this cannot be bypassed — it's the UI half of a server-enforced rule.
+  if (user && mustChangePassword) {
+    return <ForcePasswordReset />;
+  }
 
   return (
     <Routes>

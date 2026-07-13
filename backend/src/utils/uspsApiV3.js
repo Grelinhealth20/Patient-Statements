@@ -12,16 +12,32 @@ import { splitAddress, buildUspsStatus, UspsValidationError } from './uspsValida
  * memory until shortly before it expires. Everything is server-side only — no USPS
  * credential or token ever reaches the browser.
  *
- * On success this returns the SAME normalized shape as the Google extractor
- * (line1/line2/formatted/complete/verdictText…) so the resolver/DB path is
- * provider-agnostic. When USPS cannot identify an address accurately it throws
- * `UspsValidationError`, and the resolver falls back to Google.
+ * On success this returns a normalized shape (line1/line2/formatted/complete/
+ * verdictText…) so the resolver/DB path is provider-agnostic. When USPS cannot
+ * identify an address accurately it throws `UspsValidationError`, which the caller
+ * surfaces to the user (USPS is the sole validator — there is no fallback).
  */
 
 const DEFAULT_TIMEOUT_MS = 10000;
-const TOKEN_SKEW_MS = 60 * 1000; // refresh a minute before expiry
+// Refresh well before the JWT's real expiry so a warm/long-lived instance never sits
+// on the expiry boundary and sends a just-expired token. Tokens are reusable and
+// minting is cheap, so a generous 5-minute skew is free insurance against 401s.
+const TOKEN_SKEW_MS = 5 * 60 * 1000;
 
 const s = (v) => (v == null ? '' : String(v)).trim();
+
+/**
+ * True when a response indicates an access-token problem (expired / invalid / missing)
+ * that a fresh token would fix. USPS returns 401 for this, but some gateway paths use
+ * 403 or only signal it in the body (`errors[].title` = invalid_token / token expired),
+ * so we detect all of those and treat them as retryable.
+ */
+function isTokenAuthError(status, json) {
+  if (status === 401) return true;
+  const blob = JSON.stringify(json || '').toLowerCase();
+  const tokenish = /invalid_token|token.*expire|expire.*token|access token|apikeyexpired|api key.*expire/.test(blob);
+  return (status === 403 || status === 400) && tokenish;
+}
 
 /** True when the USPS APIs v3 OAuth credentials are configured. */
 export function isUspsV3Configured() {
@@ -140,7 +156,7 @@ function dpvVerdict(dpv, exact, hasZip4) {
 /**
  * Validate a patient's address with USPS APIs v3. Returns the normalized standardized
  * address on success, or throws `UspsValidationError` when USPS cannot identify it
- * accurately (so the caller can fall back to Google).
+ * accurately (the caller surfaces the message; there is no fallback provider).
  *
  * @param {{line1?: string, line2?: string}} input
  * @param {object} [opts]  { timeoutMs?, _retried? }
@@ -176,13 +192,17 @@ export async function validateAddressUspsV3({ line1, line2 } = {}, opts = {}) {
     throw new UspsValidationError(`Could not reach USPS: ${err.message}`, 'UPSTREAM');
   }
 
-  // A 401 can mean the cached token was revoked early — refresh once and retry.
-  if (res.status === 401 && !opts._retried) {
+  const json = await res.json().catch(() => null);
+
+  // An expired/invalid/missing token (401, or 403/400 signalling a token problem in
+  // the body) is transient — force a brand-new token and retry ONCE. This self-heals
+  // a token that expired between the freshness check and the call, or one rejected by
+  // a different gateway node.
+  if (isTokenAuthError(res.status, json) && !opts._retried) {
     await getUspsAccessToken({ force: true });
     return validateAddressUspsV3({ line1, line2 }, { ...opts, _retried: true });
   }
 
-  const json = await res.json().catch(() => null);
   if (!res.ok) {
     const detail = json?.error?.message || json?.error_description || json?.message || `HTTP ${res.status}`;
     const code = res.status === 401 || res.status === 403 ? 'AUTH'
@@ -247,16 +267,20 @@ export function buildUspsV3Status(validated = null) {
 /* ----------------------------------------------------------------- health */
 
 let _health = { at: 0, healthy: false, reason: null };
-const HEALTH_TTL_MS = 5 * 60 * 1000;
+const HEALTH_TTL_OK_MS = 5 * 60 * 1000;   // trust a healthy result for 5 minutes
+const HEALTH_TTL_FAIL_MS = 30 * 1000;     // re-check a failure quickly (don't show a stale error)
 
 /**
  * Live USPS v3 health probe (cached briefly) so the client pill reflects whether USPS
- * is ACTUALLY serving right now. Validates a stable, deliverable address.
+ * is ACTUALLY serving right now. Validates a stable, deliverable address. A healthy
+ * result is cached for 5 min; a failure is cached only 30s so a transient blip (e.g. a
+ * momentary token/network hiccup) doesn't leave a stale "error" on the pill for long.
  */
 export async function probeUspsV3Health({ force = false } = {}) {
   if (!isUspsV3Configured()) return { configured: false, healthy: false, reason: 'USPS APIs v3 is not configured.' };
   const now = Date.now();
-  if (!force && _health.at && now - _health.at < HEALTH_TTL_MS) {
+  const ttl = _health.healthy ? HEALTH_TTL_OK_MS : HEALTH_TTL_FAIL_MS;
+  if (!force && _health.at && now - _health.at < ttl) {
     return { configured: true, healthy: _health.healthy, reason: _health.reason, cached: true, checkedAt: new Date(_health.at).toISOString() };
   }
   try {
