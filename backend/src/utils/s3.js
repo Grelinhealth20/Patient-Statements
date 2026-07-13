@@ -1,4 +1,11 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { env } from '../config/env.js';
 
@@ -125,6 +132,40 @@ export async function getPresignedDownloadUrl({ key, fileName, expiresIn }) {
     );
   } catch (err) {
     throw new S3StorageError(`Could not create a download link: ${err.message}`, 502);
+  }
+}
+
+/**
+ * Permanently delete EVERY stored statement object under the app's key prefix.
+ * Scoped to `<keyPrefix>/` so it can never touch unrelated objects in a shared
+ * bucket. Lists and deletes in pages of up to 1000 (the S3 batch limit) until the
+ * prefix is empty. Used only by the super-admin "Delete All" purge.
+ *
+ * @returns {Promise<{ deleted: number, configured: boolean }>}
+ */
+export async function deleteAllStatementObjects() {
+  if (!isS3Configured()) return { deleted: 0, configured: false };
+  const s3 = getClient();
+  const prefix = `${safeSegment(env.s3.keyPrefix || 'statements')}/`;
+  let deleted = 0;
+  let token;
+  try {
+    do {
+      const list = await s3.send(
+        new ListObjectsV2Command({ Bucket: env.s3.bucket, Prefix: prefix, ContinuationToken: token })
+      );
+      const objects = (list.Contents || []).map((o) => ({ Key: o.Key }));
+      if (objects.length) {
+        await s3.send(
+          new DeleteObjectsCommand({ Bucket: env.s3.bucket, Delete: { Objects: objects, Quiet: true } })
+        );
+        deleted += objects.length;
+      }
+      token = list.IsTruncated ? list.NextContinuationToken : undefined;
+    } while (token);
+    return { deleted, configured: true };
+  } catch (err) {
+    throw new S3StorageError(`Failed to wipe stored PDFs from S3: ${err.message}`, 502);
   }
 }
 

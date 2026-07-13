@@ -19,6 +19,7 @@ export default function AdminDashboard() {
   const [editTarget, setEditTarget] = useState(null);
   const [resetTarget, setResetTarget] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [wipeOpen, setWipeOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -193,6 +194,33 @@ export default function AdminDashboard() {
           </table>
         </div>
       </section>
+
+      {/* Danger Zone — destructive, super-admin-only data purge. */}
+      <section className="panel danger-zone">
+        <div className="panel-head">
+          <div className="panel-title-wrap">
+            <h2>Danger Zone</h2>
+          </div>
+        </div>
+        <div className="danger-row">
+          <div className="danger-copy">
+            <strong>Delete all data</strong>
+            <span className="switch-sub">
+              Permanently wipes every patient statement, date of service and stored PDF
+              from the database and S3. User accounts are preserved so the app keeps
+              working. This cannot be undone.
+            </span>
+          </div>
+          <button className="btn-danger" onClick={() => setWipeOpen(true)}>Delete All Data</button>
+        </div>
+      </section>
+
+      {wipeOpen && (
+        <WipeAllModal
+          onClose={() => setWipeOpen(false)}
+          onWiped={() => setWipeOpen(false)}
+        />
+      )}
 
       {createOpen && (
         <UserFormModal
@@ -484,6 +512,72 @@ function DeleteModal({ target, onClose, onDeleted }) {
         Are you sure you want to permanently delete{' '}
         <strong>{target.fullName || target.username}</strong> ({target.email})?
       </p>
+    </Modal>
+  );
+}
+
+const WIPE_PHRASE = 'DELETE ALL';
+
+/**
+ * Type-to-confirm modal for the destructive full data wipe. The Delete button stays
+ * disabled until the operator types the exact confirmation phrase; the server also
+ * enforces super-admin + the same phrase, so this is defense-in-depth, not the gate.
+ */
+function WipeAllModal({ onClose, onWiped }) {
+  const { push } = useToast();
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const ok = text.trim() === WIPE_PHRASE;
+
+  const confirm = async () => {
+    if (!ok) { setError(`Type "${WIPE_PHRASE}" exactly to confirm.`); return; }
+    setBusy(true);
+    setError('');
+    try {
+      const { data } = await api.post('/admin/wipe-all', { confirm: WIPE_PHRASE });
+      push(
+        `All data wiped: ${data.statementDosDeleted} DOS · ${data.statementsDeleted} statements · ${data.s3ObjectsDeleted} stored PDFs removed.`,
+        'success'
+      );
+      if (data.s3Error) push(`Note: some S3 objects could not be removed (${data.s3Error}).`, 'error');
+      onWiped();
+    } catch (err) {
+      setError(err.response?.data?.message || 'Wipe failed.');
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="Delete ALL Data"
+      subtitle="Permanently erase all patient data and stored PDFs"
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn-danger" onClick={confirm} disabled={busy || !ok}>
+            {busy ? 'Wiping…' : 'Permanently Delete Everything'}
+          </button>
+        </>
+      }
+    >
+      {error && <div className="alert alert-error">{error}</div>}
+      <p className="confirm-text">
+        This permanently deletes <strong>every patient statement, date of service and stored PDF</strong>{' '}
+        from the database and the S3 bucket. <strong>User accounts are kept</strong> so the app keeps working.{' '}
+        <strong>This cannot be undone.</strong>
+      </p>
+      <label className="field">
+        <span className="field-label">Type <strong>{WIPE_PHRASE}</strong> to confirm</span>
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={WIPE_PHRASE}
+          autoFocus
+          autoComplete="off"
+        />
+      </label>
     </Modal>
   );
 }

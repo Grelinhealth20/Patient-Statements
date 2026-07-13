@@ -409,7 +409,13 @@ function drawPage(doc, stmt, pageRows, pageIndex, provider, patient) {
   fillRect(doc, LX, by, LW, CHROME_BOTTOM - by, P.panel);
   outline(LX, by, LW, CHROME_BOTTOM - by);
   txt(doc, 'PATIENT NAME', LX + 10, by + 12, { size: 6.5, bold: true, color: P.label });
-  txt(doc, val(patient.patientName), LX + 10, by + 24, { size: 10.5, bold: true, color: P.text });
+  // Patient name (left) and DOB (right) share one baseline. The DOB is right-aligned
+  // to the panel edge and the name auto-fits the remaining width, so neither overlaps
+  // and the rest of the block is untouched. DOB renders only when present.
+  const dobStr = val(patient.dob) ? `DOB: ${mdy(patient.dob)}` : '';
+  const dobW = dobStr ? width(doc, dobStr, 9, true) + 12 : 0;
+  txt(doc, fit(doc, val(patient.patientName), LW - 20 - dobW, 10.5, true), LX + 10, by + 24, { size: 10.5, bold: true, color: P.text });
+  if (dobStr) txt(doc, dobStr, LR - 10, by + 24, { size: 9, bold: true, align: 'right', color: P.text });
   txt(doc, 'PATIENT ADDRESS', LX + 10, by + 34, { size: 6.5, bold: true, color: P.label });
   // Patient address on two lines: street (line 1) then City, State ZIP+4 (line 2).
   // If the street line is missing, the city/state/ZIP promotes to the first line so
@@ -598,6 +604,7 @@ function buildContext(stmtGroup) {
   const patient = {
     patientName: stmtGroup.patientName,
     accountNumber: stmtGroup.accountNumber,
+    dob: first(sample, ['patientDob', 'dob', 'dateOfBirth', 'birthDate']),
     address1: s(sample.patientAddress1),
     cityStateZip: s(sample.patientAddress2),
     fullAddress,
@@ -643,7 +650,7 @@ export function buildStatementDoc(stmtGroup) {
 export function buildBlankTemplateDoc(mono = false) {
   const doc = new jsPDF({ unit: 'pt', format: 'letter' });
   const provider = { ...EMPTY_PROVIDER };
-  const patient = { patientName: '', accountNumber: '', address1: '', cityStateZip: '', fullAddress: '' };
+  const patient = { patientName: '', accountNumber: '', dob: '', address1: '', cityStateZip: '', fullAddress: '' };
   const stmt = {
     blank: true,
     mono: !!mono,

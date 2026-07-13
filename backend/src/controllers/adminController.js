@@ -2,8 +2,10 @@ import bcrypt from 'bcryptjs';
 import { getPool } from '../config/db.js';
 import { publicUser } from '../utils/serialize.js';
 import { writeAudit } from '../config/initDb.js';
+import { deleteAllStatementObjects, isS3Configured } from '../utils/s3.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const WIPE_PHRASE = 'DELETE ALL';
 
 async function getUserRow(id) {
   const [rows] = await getPool().query(`SELECT * FROM users WHERE id = :id LIMIT 1`, { id });
@@ -198,6 +200,66 @@ export async function resetPassword(req, res, next) {
     await writeAudit({ actorId: req.user.id, action: 'RESET_PASSWORD', targetId: id, detail: `Reset password for ${target.username}` });
 
     return res.json({ message: `Password reset for ${target.username}. They will be asked to set a new password at next login.` });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/admin/wipe-all — DESTRUCTIVE. Permanently deletes ALL patient statement
+ * data (statement_dos, statements, usage counters) and every stored PDF in S3.
+ *
+ * Deliberately preserves USER ACCOUNTS and the AUDIT LOG so the application keeps
+ * working (everyone can still sign in) and the wipe itself stays accountable.
+ * Guarded three ways: super-admin only (route middleware), a typed confirmation
+ * phrase, and a full audit record.
+ */
+export async function wipeAllData(req, res, next) {
+  try {
+    const confirm = String(req.body?.confirm ?? '').trim();
+    if (confirm !== WIPE_PHRASE) {
+      return res.status(400).json({
+        message: `Confirmation required. Type "${WIPE_PHRASE}" exactly to permanently wipe all data.`,
+        code: 'CONFIRM_REQUIRED',
+      });
+    }
+
+    const pool = getPool();
+    // Snapshot the volume being destroyed (for the response + audit trail).
+    const [[{ dos }]] = await pool.query('SELECT COUNT(*) AS dos FROM statement_dos');
+    const [[{ stmts }]] = await pool.query('SELECT COUNT(*) AS stmts FROM statements');
+
+    // 1) Wipe stored PDFs from S3 (best-effort — a storage error must not leave the
+    //    DB half-wiped, so it's reported but doesn't abort the DB purge).
+    let s3ObjectsDeleted = 0;
+    let s3Error = null;
+    try {
+      const r = await deleteAllStatementObjects();
+      s3ObjectsDeleted = r.deleted;
+    } catch (err) {
+      s3Error = err.message;
+    }
+
+    // 2) Purge all statement/business data. Users + audit_logs are intentionally kept.
+    await pool.query('DELETE FROM statement_dos');
+    await pool.query('DELETE FROM statements');
+    await pool.query('DELETE FROM api_usage_monthly');
+
+    await writeAudit({
+      actorId: req.user.id,
+      action: 'WIPE_ALL_DATA',
+      detail: `Purged all data: statement_dos=${dos} statements=${stmts} s3Objects=${s3ObjectsDeleted}${s3Error ? ` s3Error=${s3Error}` : ''}`,
+    });
+
+    return res.json({
+      wiped: true,
+      statementDosDeleted: Number(dos),
+      statementsDeleted: Number(stmts),
+      s3Configured: isS3Configured(),
+      s3ObjectsDeleted,
+      s3Error,
+      message: 'All patient statement data and stored PDFs have been permanently deleted. User accounts are unaffected.',
+    });
   } catch (err) {
     next(err);
   }

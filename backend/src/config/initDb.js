@@ -117,6 +117,12 @@ export async function initSchema() {
     { name: 'must_change_password', ddl: 'ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 0 AFTER token_version' },
   ]);
 
+  // Additive migration: denormalized Patient Date of Birth captured on import (also
+  // kept in the row's JSON `data`). Existing rows default to '' until re-imported.
+  await ensureColumns('statement_dos', [
+    { name: 'patient_dob', ddl: "ADD COLUMN patient_dob VARCHAR(40) NOT NULL DEFAULT '' AFTER patient_name" },
+  ]);
+
   await seedSuperAdmin();
 }
 

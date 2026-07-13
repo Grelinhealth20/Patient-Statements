@@ -151,6 +151,7 @@ export async function importRows(req, res, next) {
         userId,
         s(row.accountNumber).slice(0, 64),
         s(row.patientName).slice(0, 191),
+        s(row.patientDob).slice(0, 40),
         pKey.slice(0, 160),
         s(row.dateOfService || row.statementDate).slice(0, 80),
         dKey.slice(0, 80),
@@ -171,7 +172,7 @@ export async function importRows(req, res, next) {
       const chunk = values.slice(i, i + INSERT_CHUNK);
       const [result] = await pool.query(
         `INSERT IGNORE INTO statement_dos
-           (user_id, account_number, patient_name, patient_key, dos_date, dos_key, data, source_file)
+           (user_id, account_number, patient_name, patient_dob, patient_key, dos_date, dos_key, data, source_file)
          VALUES ?`,
         [chunk]
       );
@@ -316,6 +317,7 @@ export async function listPatients(req, res, next) {
       return {
         key: r.patientKey,
         patientName: r.patientName || '',
+        patientDob: s(data?.patientDob),
         accountNumber: r.accountNumber || '',
         officeAddress: officeAddressOf(data),
         patientAddress: patientAddressOf(data),

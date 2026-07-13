@@ -27,6 +27,7 @@ const COLUMNS = [
   col('phone', 'Phone', ['phonenumber', 'tel', 'telephone', 'officephone']),
   col('insurance', 'Insurance', ['payer', 'insurancename']),
   col('patientName', 'Patient Name', ['patient']),
+  col('patientDob', 'Patient DOB', ['dob', 'dateofbirth', 'birthdate', 'patientdob', 'patientdateofbirth', 'patientbirthdate', 'patientdob']),
   col('accountNumber', 'Account Number', ['acctno', 'accountno', 'accountnum']),
   col('patientAddress1', 'Patient Address 1', ['pataddress1', 'patientaddressline1']),
   col('patientAddress2', 'Patient Address 2', ['pataddress2', 'patientaddressline2']),
@@ -59,7 +60,7 @@ const MONEY_KEYS = new Set([
 // the patient-level "Office Address" / "Patient Address" columns, so they are
 // intentionally omitted from the per-DOS detail table.
 const DETAIL_KEYS = [
-  'statementNo', 'statementDate', 'renderingProvider', 'insurance', 'patientName', 'accountNumber',
+  'statementNo', 'statementDate', 'renderingProvider', 'insurance', 'patientName', 'patientDob', 'accountNumber',
   'dateOfService', 'cpt', 'procedure', 'quantity', 'charge', 'insurancePayment', 'lastPaidAmount',
   'adjustment', 'totalAmountDue', 'patientResponsibility', 'lastPaidDate', 'paymentDate',
   'adjustmentDate', 'balanceAppliedTo',
@@ -74,7 +75,7 @@ const money = (n) =>
   })}`;
 
 // Detail columns that hold a date, so they render as mm/dd/yyyy.
-const DATE_KEYS = new Set(['statementDate', 'dateOfService', 'lastPaidDate', 'paymentDate', 'adjustmentDate']);
+const DATE_KEYS = new Set(['statementDate', 'dateOfService', 'lastPaidDate', 'paymentDate', 'adjustmentDate', 'patientDob']);
 
 const pad2 = (n) => String(n).padStart(2, '0');
 
@@ -128,7 +129,7 @@ function StatusPill({ status }) {
   );
 }
 
-const GEN_COLSPAN = 10; // table columns (incl. Tier) — used for full-width message/detail rows
+const GEN_COLSPAN = 11; // table columns (incl. Patient DOB + Tier) — full-width message/detail rows
 const PAGE_SIZE = 10; // patients per page in the dashboard table
 
 /** Build a compact page-number window, e.g. [1, '…', 5, 6, 7, '…', 16]. */
@@ -287,6 +288,7 @@ function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, d
       >
         <td style={{ textAlign: 'center', color: 'var(--muted, #6E7D91)' }}>{ex?.open ? '▾' : '▸'}</td>
         <td><strong>{p.patientName || '—'}</strong></td>
+        <td className="mono">{toMDY(p.patientDob) || p.patientDob || '—'}</td>
         <td className="mono">{p.accountNumber || '—'}</td>
         <td><AddressCell addr={p.officeAddress} /></td>
         <td onClick={(e) => { if (editing) e.stopPropagation(); }}>
@@ -922,6 +924,7 @@ export default function StatementHome() {
               <tr>
                 <th style={{ width: 28 }} />
                 <th>Patient</th>
+                <th>Patient DOB</th>
                 <th>Account Number</th>
                 <th>Office Address</th>
                 <th>Patient Address</th>

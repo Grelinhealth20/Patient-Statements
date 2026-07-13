@@ -924,6 +924,13 @@ input, button, select, textarea { font-family: inherit; }
 .switch-row strong { display: block; font-size: 12px; font-weight: 600; }
 .switch-sub { display: block; font-size: 11px; color: var(--text-mute); font-weight: 600; margin-top: 1px; }
 
+/* Danger Zone — destructive full-data wipe (super admin only). */
+.danger-zone { margin-top: 22px; border: 1.5px solid #f0c6cd; }
+.danger-zone .panel-head h2 { color: #be123c; }
+.danger-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 18px; flex-wrap: wrap; }
+.danger-copy { max-width: 680px; }
+.danger-copy strong { display: block; color: #be123c; font-size: 14px; font-weight: 700; margin-bottom: 2px; }
+
 /* =========================================================================
    Toasts
    ========================================================================= */
