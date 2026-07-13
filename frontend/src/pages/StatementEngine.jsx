@@ -1,23 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { statementsApi } from '../api/client.js';
 import { useToast } from '../components/Toast.jsx';
-import { groupStatements, buildStatementDoc, buildBlankTemplateDoc } from '../lib/statementPdf.js';
+import { buildBlankTemplateDoc, downloadBlankTemplate } from '../lib/statementPdf.js';
 
-const TEMPLATE_KEY = '__template__';
+/* Minimum time the processing animation stays on screen so the render always
+   reads as a deliberate, enterprise-grade operation (never a jarring flash). */
+const MIN_PROCESSING_MS = 650;
 
-const money = (n) =>
-  `$${(Number(String(n).replace(/[^0-9.\-]/g, '')) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const safeName = (str) => String(str || '').replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '') || 'statement';
-
-function EngineIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="3.2" />
-      <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M16.9 16.9l2.1 2.1M19.1 4.9l-2.1 2.1M7 16.9l-2.1 2.1" />
-    </svg>
-  );
-}
 function DownloadIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="15" height="15">
@@ -25,186 +14,146 @@ function DownloadIcon() {
     </svg>
   );
 }
-function StatusPill({ status }) {
-  const generated = status === 'generated';
+function EngineIcon() {
   return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 10px', borderRadius: 999,
-      fontSize: 12, fontWeight: 700, color: generated ? '#167A4D' : '#B45309',
-      background: generated ? '#E7F6EE' : '#FEF3E2', border: `1px solid ${generated ? '#B7E3CB' : '#F6D9A8'}`,
-    }}>
-      <span style={{ width: 7, height: 7, borderRadius: 999, background: generated ? '#167A4D' : '#D97706' }} />
-      {generated ? 'Generated' : 'Pending'}
-    </span>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3.2" />
+      <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M16.9 16.9l2.1 2.1M19.1 4.9l-2.1 2.1M7 16.9l-2.1 2.1" />
+    </svg>
   );
 }
 
+/** Enterprise-grade processing animation shown while the template renders. */
+function ProcessingOverlay({ label }) {
+  return (
+    <div className="engine-processing" role="status" aria-live="polite">
+      <div className="engine-loader" aria-hidden="true">
+        <span className="engine-orbit" />
+        <span className="engine-orbit o2" />
+        <span className="engine-core"><EngineIcon /></span>
+      </div>
+      <p className="engine-processing-title">{label}</p>
+      <div className="engine-progress"><span /></div>
+      <span className="engine-processing-sub">ENTERPRISE STATEMENT ENGINE</span>
+    </div>
+  );
+}
+
+/**
+ * Statement Engine — a single-purpose template stage.
+ *
+ * It renders the statement template (visible by default) with a processing
+ * animation, and exposes template generation (view / download, colored or
+ * completely blank & white). Patient data, KPIs and per-patient tables live on
+ * the Dashboard; the Engine intentionally shows only the template + generation.
+ */
 export default function StatementEngine() {
   const { push } = useToast();
-  const [patients, setPatients] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState('');
-  const [preview, setPreview] = useState(null); // { key, url, title }
-  const previewRef = useRef(null);
+  const [variant, setVariant] = useState('color'); // 'color' | 'white'
+  const [url, setUrl] = useState('');
+  const [processing, setProcessing] = useState(true);
+  const urlRef = useRef('');
 
+  // Build the blank template PDF for the active variant and show it in the stage.
+  // Runs on mount and whenever the variant changes. A setTimeout (not rAF, which
+  // can be throttled in background/preview contexts) defers the synchronous jsPDF
+  // build one macrotask so the processing animation paints first.
   useEffect(() => {
-    let alive = true;
-    statementsApi.patients()
-      .then(({ patients: list }) => { if (alive) setPatients(list || []); })
-      .catch(() => { if (alive) push('Could not load patients from the server.', 'error'); })
-      .finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
-  }, [push]);
+    let cancelled = false;
+    setProcessing(true);
+    if (urlRef.current) { URL.revokeObjectURL(urlRef.current); urlRef.current = ''; }
+    setUrl('');
+    const start = Date.now();
+    const build = setTimeout(() => {
+      let blobUrl;
+      try {
+        const doc = buildBlankTemplateDoc(variant === 'white');
+        blobUrl = String(doc.output('bloburl'));
+      } catch {
+        if (!cancelled) { push('Failed to render the statement template.', 'error'); setProcessing(false); }
+        return;
+      }
+      urlRef.current = blobUrl;
+      const wait = Math.max(0, MIN_PROCESSING_MS - (Date.now() - start));
+      setTimeout(() => { if (!cancelled) { setUrl(blobUrl); setProcessing(false); } }, wait);
+    }, 30);
+    return () => { cancelled = true; clearTimeout(build); if (urlRef.current) { URL.revokeObjectURL(urlRef.current); urlRef.current = ''; } };
+  }, [variant, push]);
 
-  useEffect(() => () => { if (preview?.url) URL.revokeObjectURL(preview.url); }, [preview?.url]);
-  useEffect(() => { if (preview) previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, [preview?.key]);
-
-  const totals = useMemo(() => ({
-    patients: patients.length,
-    dos: patients.reduce((t, p) => t + p.dosCount, 0),
-    generated: patients.filter((p) => p.pendingCount === 0 && p.dosCount > 0).length,
-  }), [patients]);
-
-  const buildDocForKey = useCallback(async (key) => {
-    const { dos } = await statementsApi.patientDos(key);
-    const rows = (dos || []).map((d) => d.data);
-    const groups = groupStatements(rows);
-    return groups.length ? buildStatementDoc(groups[0]) : buildBlankTemplateDoc();
-  }, []);
-
-  const showPreview = useCallback(async (key, title, makeDocAsync) => {
+  const onDownloadTemplate = (mono) => {
     try {
-      if (preview?.url) URL.revokeObjectURL(preview.url);
-      if (preview?.key === key) { setPreview(null); return; }
-      setBusy(key);
-      const doc = await makeDocAsync();
-      const url = String(doc.output('bloburl'));
-      setPreview({ key, url, title });
+      downloadBlankTemplate(mono);
+      push(`Downloaded the ${mono ? 'completely blank & white' : 'colored'} statement template.`);
     } catch {
-      push('Failed to render the preview.', 'error');
-    } finally {
-      setBusy('');
-    }
-  }, [preview, push]);
-
-  const onPreview = (p) => showPreview(p.key, `Statement Preview · ${p.patientName || p.accountNumber}`, () => buildDocForKey(p.key));
-  const onPreviewTemplate = () => showPreview(TEMPLATE_KEY, 'Blank Statement Template', async () => buildBlankTemplateDoc());
-
-  const onDownload = async (p) => {
-    setBusy(p.key);
-    try {
-      const doc = await buildDocForKey(p.key);
-      doc.save(p.lastFileName || `Statement_${safeName(p.patientName || p.accountNumber)}.pdf`);
-      push(`Statement PDF downloaded for ${p.patientName || p.accountNumber}.`);
-    } catch {
-      push('Failed to generate the statement PDF.', 'error');
-    } finally {
-      setBusy('');
+      push('Failed to download the template.', 'error');
     }
   };
 
-  const closePreview = () => { if (preview?.url) URL.revokeObjectURL(preview.url); setPreview(null); };
-
-  const previewPanel = preview && (
-    <section className="panel" ref={previewRef}>
-      <div className="panel-head">
-        <div className="panel-title-wrap"><h2>{preview.title}</h2></div>
-        <button className="btn-ghost danger" onClick={closePreview}>Close</button>
-      </div>
-      <iframe title="Statement preview" src={preview.url}
-        style={{ width: '100%', height: '82vh', border: 'none', display: 'block', background: '#fff' }} />
-    </section>
-  );
-
-  if (!loading && patients.length === 0) {
-    return (
-      <div className="stmt-view">
-        <section className="blank-canvas">
-          <div className="blank-inner">
-            <div className="blank-icon"><EngineIcon /></div>
-            <h2>Statement Engine</h2>
-            <p>
-              No statement data loaded yet. Upload a CSV or Excel file on the{' '}
-              <Link to="/statements" className="dz-link">Dashboard</Link> and every date of service will be
-              grouped by patient here in real time.
-            </p>
-            <button className="btn-primary btn-compact" style={{ marginTop: 18 }} onClick={onPreviewTemplate}>
-              {preview?.key === TEMPLATE_KEY ? 'Hide Template' : 'View Blank Template'}
-            </button>
-            <span className="blank-tag" style={{ display: 'block', marginTop: 14 }}>ENGINE · AWAITING DATA</span>
-          </div>
-        </section>
-        {previewPanel}
-      </div>
-    );
-  }
+  const variantLabel = variant === 'white' ? 'BLANK · WHITE' : 'COLORED';
 
   return (
-    <div className="stmt-view">
+    <div className="stmt-view engine-view">
       <div className="page-head">
         <div>
           <h1>Statement Engine</h1>
           <p className="page-desc">
-            {totals.patients} patient statement{totals.patients === 1 ? '' : 's'} · every date of service is
-            consolidated per patient. Generation and status are managed on the{' '}
-            <Link to="/statements" className="dz-link">Dashboard</Link>; preview and download the rendered PDFs here.
+            The enterprise statement template, rendered live. Patient generation, validation and status
+            are managed on the <Link to="/statements" className="dz-link">Dashboard</Link>.
           </p>
         </div>
-        <button className="btn-secondary btn-compact" onClick={onPreviewTemplate}>
-          {preview?.key === TEMPLATE_KEY ? 'Hide Template' : 'View Template'}
-        </button>
-      </div>
-
-      <div className="stat-grid">
-        <div className="stat-card accent-blue"><div className="stat-top"><span className="stat-label">Patients</span></div><span className="stat-value">{totals.patients}</span></div>
-        <div className="stat-card accent-violet"><div className="stat-top"><span className="stat-label">Dates of Service</span></div><span className="stat-value">{totals.dos}</span></div>
-        <div className="stat-card accent-green"><div className="stat-top"><span className="stat-label">Fully Generated</span></div><span className="stat-value">{totals.generated}</span></div>
-      </div>
-
-      <section className="panel">
-        <div className="panel-head">
-          <div className="panel-title-wrap"><h2>Generated Statements</h2><span className="count-badge">{patients.length}</span></div>
+        <div className="row-actions" style={{ flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <button className="btn-ghost" onClick={() => onDownloadTemplate(true)} title="Completely blank & white, properly structured template">
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><DownloadIcon /> Blank · White</span>
+          </button>
+          <button className="btn-primary btn-compact" onClick={() => onDownloadTemplate(false)} title="Full-color structured template">
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><DownloadIcon /> Colored</span>
+          </button>
         </div>
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Patient</th>
-                <th>Account Number</th>
-                <th className="ta-right">DOS</th>
-                <th>Status</th>
-                <th>File Name</th>
-                <th className="ta-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={6} className="table-empty">Loading…</td></tr>
-              ) : patients.map((p) => (
-                <tr key={p.key}>
-                  <td><div className="cell-user"><strong>{p.patientName || '—'}</strong></div></td>
-                  <td className="mono">{p.accountNumber || '—'}</td>
-                  <td className="ta-right">{p.dosCount}</td>
-                  <td><StatusPill status={p.status} /></td>
-                  <td className="mono" title={p.lastFileName}>{p.lastFileName || '—'}</td>
-                  <td className="ta-right">
-                    <div className="row-actions">
-                      <button className="btn-ghost" disabled={busy === p.key} onClick={() => onPreview(p)}>
-                        {preview?.key === p.key ? 'Hide' : busy === p.key ? '…' : 'Preview'}
-                      </button>
-                      <button className="btn-ghost" disabled={busy === p.key} onClick={() => onDownload(p)}>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><DownloadIcon /> Download</span>
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      </div>
+
+      <section className="panel template-stage-panel">
+        <div className="panel-head">
+          <div className="panel-title-wrap">
+            <h2>Statement Template</h2>
+            <span className="count-badge">{variantLabel}</span>
+          </div>
+          <div className="seg-toggle" role="tablist" aria-label="Template style">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={variant === 'color'}
+              className={variant === 'color' ? 'active' : ''}
+              onClick={() => setVariant('color')}
+            >
+              Colored
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={variant === 'white'}
+              className={variant === 'white' ? 'active' : ''}
+              onClick={() => setVariant('white')}
+            >
+              Blank · White
+            </button>
+          </div>
+        </div>
+
+        <div className="template-stage">
+          {processing && (
+            <ProcessingOverlay label={`Rendering ${variant === 'white' ? 'blank & white' : 'colored'} template…`} />
+          )}
+          {url && (
+            <iframe
+              title="Statement template"
+              src={url}
+              className="template-frame"
+              onLoad={() => setProcessing(false)}
+              style={{ opacity: processing ? 0 : 1 }}
+            />
+          )}
         </div>
       </section>
-
-      {previewPanel}
     </div>
   );
 }

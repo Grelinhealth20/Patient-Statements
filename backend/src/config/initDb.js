@@ -72,6 +72,30 @@ export async function initSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
 
+  // Additive migration: S3 archival columns on `statements`. Kept separate from
+  // the CREATE TABLE above so existing databases pick them up on the next boot.
+  await ensureColumns('statements', [
+    { name: 's3_bucket', ddl: 'ADD COLUMN s3_bucket VARCHAR(128) NULL AFTER dos_count' },
+    { name: 's3_key', ddl: 'ADD COLUMN s3_key VARCHAR(512) NULL AFTER s3_bucket' },
+    { name: 'file_size', ddl: 'ADD COLUMN file_size INT UNSIGNED NULL AFTER s3_key' },
+    { name: 'content_type', ddl: "ADD COLUMN content_type VARCHAR(80) NULL AFTER file_size" },
+    { name: 'stored_at', ddl: 'ADD COLUMN stored_at DATETIME NULL AFTER content_type' },
+  ]);
+
+  // Self-hosted monthly API-usage counter. The backend is the sole caller of the
+  // Address Validation API, so it counts its own billable calls here — giving an
+  // accurate free-tier vs paid verdict without Cloud Monitoring / a service account.
+  // Period is the YYYY-MM billing month (America/Los_Angeles, matching Google's reset).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS api_usage_monthly (
+      metric     VARCHAR(64) NOT NULL,
+      period     CHAR(7)     NOT NULL,
+      calls      INT UNSIGNED NOT NULL DEFAULT 0,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (metric, period)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS audit_logs (
       id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -87,6 +111,29 @@ export async function initSchema() {
   `);
 
   await seedSuperAdmin();
+}
+
+/**
+ * Idempotently add columns to an existing table. Each column is only added when
+ * it is missing (checked via information_schema), so this is safe to run on
+ * every boot and never fails on a database that already has the columns.
+ *
+ * @param {string} table
+ * @param {{name: string, ddl: string}[]} columns  ddl is the ALTER TABLE clause.
+ */
+async function ensureColumns(table, columns) {
+  const pool = getPool();
+  const [existing] = await pool.query(
+    `SELECT COLUMN_NAME AS name
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table`,
+    { table }
+  );
+  const have = new Set(existing.map((r) => String(r.name)));
+  const missing = columns.filter((c) => !have.has(c.name));
+  if (!missing.length) return;
+  // One ALTER for all missing columns keeps the migration atomic and fast.
+  await pool.query(`ALTER TABLE \`${table}\` ${missing.map((c) => c.ddl).join(', ')}`);
 }
 
 /**

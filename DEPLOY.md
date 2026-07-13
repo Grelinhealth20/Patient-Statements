@@ -73,9 +73,73 @@ Set these in **Settings → Environment Variables** for **Production** and
 | `SUPER_ADMIN_EMAIL` | `admin@grelinhealth.com` |
 | `SUPER_ADMIN_PASSWORD` | `<your-admin-password>` |
 | `SUPER_ADMIN_NAME` | `Super Administrator` |
+| `GOOGLE_ADDRESS_VALIDATION_API_KEY` | `<your-google-api-key>` |
+| `GOOGLE_ADDRESS_VALIDATION_REGION` | `US` |
+| `GCP_PROJECT_ID` | `<gcp-project-that-owns-the-key>` *(optional; enables project-wide usage)* |
+| `GCP_SERVICE_ACCOUNT_JSON` | `<service-account-key-as-one-line-json>` *(optional; see below)* |
+| `AWS_ACCESS_KEY_ID` | `<your-aws-access-key>` *(omit to use an IAM role)* |
+| `AWS_SECRET_ACCESS_KEY` | `<your-aws-secret-key>` *(omit to use an IAM role)* |
+| `S3_REGION` | `us-east-1` |
+| `S3_BUCKET` | `patient-statement-mlmg` |
+| `S3_KEY_PREFIX` | `statements` *(optional; folder for stored PDFs)* |
+| `S3_PRESIGN_EXPIRY_SECONDS` | `300` *(optional; download-link lifetime)* |
+| `S3_MAX_PDF_BYTES` | `26214400` *(optional; max upload size, 25 MiB)* |
+
+> **Statement archival (S3).** Generated PDFs are stored in the S3 bucket and
+> re-downloaded on demand by clicking the file name (via short-lived presigned
+> URLs). In production, prefer an **IAM role** over static keys — leave
+> `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` unset and the AWS default
+> credential provider chain is used. If the bucket is not configured, generation
+> still works and PDFs download locally (archival is simply skipped).
+
+> **Address Validation billing tier (live).** The "Free Tier / Paid" pill and the
+> API-status popup are driven by REAL data, never fabricated. SKU name, free
+> allowance, and unit price come from the **Cloud Billing Catalog** (works with the
+> API key alone). The month-to-date call count that decides FREE vs PAYMENT comes
+> from **Cloud Monitoring** when configured (project-wide, authoritative); if it is
+> not configured the app falls back to its own DB call-counter — still real, but it
+> counts only this app's calls. Configure Cloud Monitoring (below) to get Google's
+> project-wide total.
 
 > Generate fresh JWT secrets for a real production deploy:
 > `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`
+
+---
+
+## Cloud Monitoring (project-wide usage) — optional but recommended
+
+This makes the Free-tier vs Payment verdict reflect **Google's own project-wide
+call count** instead of this app's local counter. Cloud Monitoring **rejects API
+keys**, so it requires a service account (OAuth). SKU pricing does *not* need
+this — only the project-wide call volume does.
+
+**One-time GCP setup** (in the project that owns the Address Validation API key):
+
+1. **Enable the API** — in the Cloud Console, enable **Cloud Monitoring API**
+   (`monitoring.googleapis.com`) for the project.
+2. **Create a service account** — *IAM & Admin → Service Accounts → Create*.
+   Name it e.g. `statement-usage-reader`. No user access needed.
+3. **Grant the role** — give it exactly **`roles/monitoring.viewer`** (read-only
+   metrics). That is the only role required; nothing can be written or billed.
+4. **Create a JSON key** — *Keys → Add Key → Create new key → JSON*. Download it.
+   Treat it as a secret (never commit it, never send it to the browser).
+
+**Configure the two env vars:**
+
+- `GCP_PROJECT_ID` — the project ID that owns the API key.
+- `GCP_SERVICE_ACCOUNT_JSON` — the entire downloaded JSON key as **one line**.
+  Minify it with:
+  ```bash
+  node -e "process.stdout.write(JSON.stringify(require('./key.json')))"
+  ```
+  Paste the output as the value. (Alternatively, leave this blank and set
+  `GOOGLE_APPLICATION_CREDENTIALS` to a key-file path — the app reads Application
+  Default Credentials automatically.)
+
+**Verify it's live** — after redeploying, open the app, click the Address
+Validation status pill, and confirm the popup's **Sources** row reads
+`Cloud Monitoring · Billing Catalog` (not `App usage counter`). Until then the
+verdict still works — it just uses the local counter and says so honestly.
 
 ---
 

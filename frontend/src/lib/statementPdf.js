@@ -3,10 +3,10 @@ import { jsPDF } from 'jspdf';
 /**
  * Patient Statement PDF engine.
  *
- * Reproduces the "Main Line Medical Group" statement template pixel-for-pixel
- * (US-Letter, 612x792pt) using coordinates extracted from the reference PDF.
- * All monetary and identity fields are driven in real time from the uploaded
- * statement rows.
+ * Reproduces the enterprise statement layout pixel-for-pixel (US-Letter,
+ * 612x792pt). Every office, patient, monetary and identity field is driven in
+ * real time from the uploaded statement rows — there is no hardcoded or mock
+ * address data anywhere in the engine.
  *
  * Rules implemented:
  *  - Every Date-Of-Service (DOS) line for the same patient is collected into a
@@ -16,23 +16,20 @@ import { jsPDF } from 'jspdf';
  *    detailed-information header) plus its share of detailed DOS rows.
  */
 
-// Six unique DOS line-items per page on EVERY page. The rows are compact enough
-// that six fit beneath the full statement chrome on page 1 as well as on the
-// table-only continuation pages, so pagination is uniform (page 1 = DOS 1–6,
-// page 2 = 7–12, …) with no repeats.
-export const FIRST_PAGE_ROWS = 6;
-export const CONT_PAGE_ROWS = 6;
-export const LINES_PER_PAGE = FIRST_PAGE_ROWS; // back-compat alias
+// Exactly five DOS line-items per page on EVERY page — page 1 included.
+// Pagination is COUNT-based, so page 1 = DOS 1–5, page 2 = 6–10, … with no
+// repeats and no short first page. Five rows leave enough room for comfortable,
+// clearly-readable spacing beneath the full first-page chrome.
+export const ROWS_PER_PAGE = 5;
+export const FIRST_PAGE_ROWS = ROWS_PER_PAGE;
+export const CONT_PAGE_ROWS = ROWS_PER_PAGE;
+export const LINES_PER_PAGE = ROWS_PER_PAGE; // back-compat alias
 
 /* Template fallbacks — used when a field is absent from the uploaded data. */
-const TEMPLATE = {
-  officeName: 'Main Line Medical Group',
-  address: '857 Montgomery Ave',
-  city: 'Narberth',
-  state: 'PA',
-  zip: '19072-1541',
-  phone: '610-664-2951',
-};
+/* Empty office/provider context — used for the blank structural template, which
+   carries no real practice data. Real statements populate this from the uploaded
+   file only; there is no hardcoded/mock address anywhere. */
+const EMPTY_PROVIDER = { officeName: '', address: '', city: '', state: '', zip: '', phone: '' };
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -60,6 +57,21 @@ function money(n) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+const pad2 = (n) => String(n).padStart(2, '0');
+
+/** Format any date-ish value as mm/dd/yyyy; unrecognised values pass through. */
+function mdy(v) {
+  const str = s(v);
+  if (!str) return '';
+  let m = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);       // ISO: YYYY-MM-DD[...]
+  if (m) return `${pad2(m[2])}/${pad2(m[3])}/${m[1]}`;
+  m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);         // already M/D/YYYY
+  if (m) return `${pad2(m[1])}/${pad2(m[2])}/${m[3]}`;
+  const d = new Date(str);
+  if (!isNaN(d)) return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}/${d.getFullYear()}`;
+  return str;
 }
 
 const first = (row, keys) => {
@@ -105,25 +117,25 @@ function layoutDosRow(r) {
 }
 
 /**
- * Pack laid-out DOS rows into pages by available vertical space, never splitting
- * a DOS across a page. Page 1 starts lower (it carries the statement chrome);
- * continuation pages start near the top. Returns an array of pages, each an
- * array of { row, lines, height, rowTop }.
+ * Pack laid-out DOS rows into pages of exactly ROWS_PER_PAGE (6) rows — page 1
+ * included. Pagination is count-based, so every page carries six DOS (the last
+ * page carries the remainder). Page 1 starts lower (it carries the statement
+ * chrome); continuation pages start near the top. Returns an array of pages,
+ * each an array of { row, lines, height, rowTop }.
  */
 function paginateRows(rowInfos) {
   const pages = [];
-  let page = [];
-  let y = FIRST_PAGE_ROW_TOP;
-  for (const info of rowInfos) {
-    if (page.length > 0 && y + info.height > ROWS_BOTTOM) {
-      pages.push(page);
-      page = [];
-      y = CONT_ROW_TOP; // every page after the first is a continuation
-    }
-    page.push({ ...info, rowTop: y });
-    y += info.height;
+  for (let i = 0; i < rowInfos.length; i += ROWS_PER_PAGE) {
+    const chunk = rowInfos.slice(i, i + ROWS_PER_PAGE);
+    let y = pages.length === 0 ? FIRST_PAGE_ROW_TOP : CONT_ROW_TOP;
+    pages.push(
+      chunk.map((info) => {
+        const item = { ...info, rowTop: y };
+        y += info.height;
+        return item;
+      })
+    );
   }
-  if (page.length) pages.push(page);
   return pages;
 }
 
@@ -208,6 +220,16 @@ const C = {
   black: [17, 17, 17], // #111111 — strong near-black body text
 };
 
+/* Monochrome palette for the "completely blank & white" statement: every fill
+   becomes white and every mark (text, rules, borders) becomes black. Structural
+   blocks that relied on a dark fill for definition get a black outline instead
+   (see the `outline()` helper in drawPage). */
+const MONO = {
+  navy: C.white, navyDark: C.white, slate: C.white, panel: C.white, panel2: C.white, pink: C.white,
+  border: C.black, label: C.black, text: C.black, green: C.black, red: C.black,
+  white: C.black, black: C.black,
+};
+
 function fillRect(doc, x, y, w, h, rgb) {
   doc.setFillColor(rgb[0], rgb[1], rgb[2]);
   doc.rect(x, y, w, h, 'F');
@@ -241,9 +263,9 @@ function fit(doc, str, maxW, size, bold = false) {
   return str.slice(0, lo).trimEnd() + '…';
 }
 
-/** Small outlined envelope glyph (white stroke) for the payment banner. */
-function envelope(doc, x, y, w, h) {
-  doc.setDrawColor(255, 255, 255);
+/** Small outlined envelope glyph for the payment banner (white stroke, black in mono). */
+function envelope(doc, x, y, w, h, mono = false) {
+  if (mono) doc.setDrawColor(0, 0, 0); else doc.setDrawColor(255, 255, 255);
   doc.setLineWidth(1.1);
   doc.rect(x, y, w, h);
   doc.line(x, y, x + w / 2, y + h * 0.58);
@@ -269,19 +291,24 @@ const DCOL = {
 /* Variable-height DOS row metrics (see layoutDosRow). Each DOS renders as a
    multi-line line-item exactly like the reference statement, so its height grows
    with the number of payment / adjustment / message lines present. */
-const LINE_H = 11; // vertical step between description lines
-const ROW_PAD_TOP = 12; // first line baseline offset from the row top
-const ROW_GAP_BALANCE = 5; // extra gap before the "Balance Amount" line
-const ROW_PAD_BOTTOM = 9; // padding below the last line to the row border
-const FIRST_PAGE_ROW_TOP = 406; // detailHdrTop(362) + band(20) + colHdr(24)
+// Sized so five DOS rows (each up to seven description lines) fit beneath the
+// full page-1 chrome with comfortable spacing: 5 × max-row-height (65) = 325 ≤
+// page-1 band (400→736 = 336).
+const LINE_H = 8; // vertical step between description lines
+const ROW_PAD_TOP = 9; // first line baseline offset from the row top
+const ROW_GAP_BALANCE = 3; // extra gap before the "Balance Amount" line
+const ROW_PAD_BOTTOM = 5; // padding below the last line to the row border
+const FIRST_PAGE_ROW_TOP = 400; // detailHdrTop(356) + band(20) + colHdr(24)
 const CONT_ROW_TOP = 74; // detailHdrTop(30) + band(20) + colHdr(24)
-const ROWS_BOTTOM = 726; // rows must end above here so the footer fits
+const ROWS_BOTTOM = 736; // rows must end above here so the footer fits
 const FOOTER_MIN_TOP = 738; // footer pinned near the page bottom on every page
 
-/** Header band: navy bar + white left-aligned title. Returns bottom Y. */
-function bandHeader(doc, x, y, w, label, { h = 19.9, size = 9, pad = 10 } = {}) {
-  fillRect(doc, x, y, w, h, C.navy);
-  txt(doc, label, x + pad, y + h - 6.5, { size, bold: true, color: C.white });
+/** Header band: filled bar + left-aligned title. In mono the bar is white with a
+    black outline and black title. Returns bottom Y. */
+function bandHeader(doc, x, y, w, label, { h = 19.9, size = 9, pad = 10, pal = C, mono = false } = {}) {
+  fillRect(doc, x, y, w, h, pal.navy);
+  if (mono) { doc.setDrawColor(0, 0, 0); doc.setLineWidth(0.8); doc.rect(x, y, w, h); doc.setLineWidth(0.7); doc.setDrawColor(0, 0, 0); }
+  txt(doc, label, x + pad, y + h - 6.5, { size, bold: true, color: pal.white });
   return y + h;
 }
 const dash = (v) => (v ? v : '—');
@@ -293,18 +320,34 @@ const dash = (v) => (v ? v : '—');
 function drawPage(doc, stmt, pageRows, pageIndex, provider, patient) {
   const centre = (a, b) => (a + b) / 2;
   const blank = !!stmt.blank;
+  const mono = !!stmt.mono; // monochrome "blank & white" mode
+  const P = mono ? MONO : C; // active palette
   const val = (v) => (blank ? '' : v); // suppress data in template mode
   const isFirst = pageIndex === 0; // full chrome only on page 1
 
+  // In mono, white-filled structural blocks need a black outline to stay visible.
+  const outline = (x, y, w, h, lw = 0.8) => {
+    if (!mono) return;
+    doc.setDrawColor(0, 0, 0); doc.setLineWidth(lw); doc.rect(x, y, w, h);
+    doc.setLineWidth(0.7); doc.setDrawColor(0, 0, 0);
+  };
+
   /* 1 — Master brand bar (first page only). Continuation pages carry the
      DETAILED INFORMATION table alone, so they skip the brand chrome entirely. */
+  // Compose the office's single-line address from only the parts that are present,
+  // so a missing field never leaves a stray comma or blank segment.
+  const cityStateZip = [s(provider.city), [s(provider.state), s(provider.zip)].filter(Boolean).join(' ')]
+    .filter(Boolean).join(', ');
+  const officeAddrLine = [s(provider.address), cityStateZip].filter(Boolean).join(', ');
   if (isFirst) {
-    fillRect(doc, 0, 0, PW, 27, C.navy);
-    txt(doc, provider.officeName.toUpperCase(), 16, 17.5, { size: 11, bold: true, color: C.white });
-    txt(doc, `${provider.address}, ${provider.city}, ${provider.state} ${provider.zip}`,
-      MR, 11.5, { size: 6.5, align: 'right', color: C.white });
-    txt(doc, `Tel: ${provider.phone}  |  Billing Hours: 10am - 2pm`,
-      MR, 20.5, { size: 6.5, align: 'right', color: C.white });
+    fillRect(doc, 0, 0, PW, 27, P.navy);
+    outline(0, 0, PW, 27);
+    txt(doc, s(provider.officeName).toUpperCase(), 16, 17.5, { size: 11, bold: true, color: P.white });
+    if (officeAddrLine) txt(doc, officeAddrLine, MR, 11.5, { size: 6.5, align: 'right', color: P.white });
+    const telLine = provider.phone
+      ? `Tel: ${s(provider.phone)}  |  Billing Hours: 10am - 2pm`
+      : 'Billing Hours: 10am - 2pm';
+    txt(doc, telLine, MR, 20.5, { size: 6.5, align: 'right', color: P.white });
   }
 
   /* Column rails — both columns share one baseline so the frame stays square. */
@@ -318,95 +361,106 @@ function drawPage(doc, stmt, pageRows, pageIndex, provider, patient) {
   if (isFirst) {
 
   /* 2 — "Pay Promptly" banner (left) */
-  fillRect(doc, LX, CHROME_TOP, LW, 34, C.slate);
-  doc.setDrawColor(90, 105, 125); doc.setLineWidth(0.5);
+  fillRect(doc, LX, CHROME_TOP, LW, 34, P.slate);
+  outline(LX, CHROME_TOP, LW, 34);
+  doc.setDrawColor(mono ? 0 : 90, mono ? 0 : 105, mono ? 0 : 125); doc.setLineWidth(0.5);
   doc.rect(LX + 4, CHROME_TOP + 4, LW - 8, 26); doc.setDrawColor(0, 0, 0);
-  txt(doc, 'Pay Promptly', LX + 13, CHROME_TOP + 20, { size: 14, bold: true, color: C.white });
-  txt(doc, 'Make your payment today.', LX + 14, CHROME_TOP + 30, { size: 7.5, color: C.white });
-  doc.setDrawColor(120, 132, 150); line(doc, LX + LW - 74, CHROME_TOP + 6, LX + LW - 74, CHROME_TOP + 28, 0.5); doc.setDrawColor(0, 0, 0);
-  envelope(doc, LX + LW - 62, CHROME_TOP + 8, 34, 18);
+  txt(doc, 'Pay Promptly', LX + 13, CHROME_TOP + 20, { size: 14, bold: true, color: P.white });
+  txt(doc, 'Make your payment today.', LX + 14, CHROME_TOP + 30, { size: 7.5, color: P.white });
+  doc.setDrawColor(mono ? 0 : 120, mono ? 0 : 132, mono ? 0 : 150); line(doc, LX + LW - 74, CHROME_TOP + 6, LX + LW - 74, CHROME_TOP + 28, 0.5); doc.setDrawColor(0, 0, 0);
+  envelope(doc, LX + LW - 62, CHROME_TOP + 8, 34, 18, mono);
 
   /* 3 — Statement summary card (right). Rows fill the card so it never leaves a gap. */
-  bandHeader(doc, RX, CHROME_TOP, RW, 'STATEMENT SUMMARY', { h: 16, size: 8.5, pad: (RW - doc.getTextWidth('STATEMENT SUMMARY')) / 2 });
+  bandHeader(doc, RX, CHROME_TOP, RW, 'STATEMENT SUMMARY', { h: 16, size: 8.5, pad: (RW - doc.getTextWidth('STATEMENT SUMMARY')) / 2, pal: P, mono });
   const sumRows = [
-    ['Total Charges Billed', money(stmt.summary.totalCharges), C.text, false],
-    ['Total Insurance Payments', money(stmt.summary.insurancePayments), C.green, false],
-    ['Total Insurance Adjustments', money(stmt.summary.insuranceAdjustments), C.text, false],
-    ['Total Patient Paid', money(stmt.summary.patientPaid), C.green, false],
-    ['Total Patient Responsibility', money(stmt.summary.patientResponsibility), C.red, true],
+    ['Total Charges Billed', money(stmt.summary.totalCharges), P.text, false],
+    ['Total Insurance Payments', money(stmt.summary.insurancePayments), P.green, false],
+    ['Total Insurance Adjustments', money(stmt.summary.insuranceAdjustments), P.text, false],
+    ['Total Patient Paid', money(stmt.summary.patientPaid), P.green, false],
+    ['Total Patient Responsibility', money(stmt.summary.patientResponsibility), P.red, true],
   ];
   const sHdrBot = CHROME_TOP + 16;
   const sRowH = (CHROME_BOTTOM - sHdrBot) / sumRows.length;
   let sy = sHdrBot;
   sumRows.forEach((row, ri) => {
-    fillRect(doc, RX, sy, RW, sRowH, row[3] ? C.pink : C.panel);
-    if (ri > 0) { doc.setDrawColor(C.border[0], C.border[1], C.border[2]); line(doc, RX, sy, RR, sy, 0.4); doc.setDrawColor(0, 0, 0); }
+    fillRect(doc, RX, sy, RW, sRowH, row[3] ? P.pink : P.panel);
+    if (ri > 0) { doc.setDrawColor(P.border[0], P.border[1], P.border[2]); line(doc, RX, sy, RR, sy, 0.4); doc.setDrawColor(0, 0, 0); }
     const yb = sy + sRowH / 2 + 3;
-    txt(doc, row[0], RX + 9, yb, { size: 7.5, bold: true, color: row[3] ? C.red : C.text });
+    txt(doc, row[0], RX + 9, yb, { size: 7.5, bold: true, color: row[3] ? P.red : P.text });
     if (!blank) txt(doc, row[1], RR - 9, yb, { size: 8.5, bold: true, align: 'right', color: row[2] });
     sy += sRowH;
   });
-  doc.setDrawColor(C.border[0], C.border[1], C.border[2]);
+  doc.setDrawColor(P.border[0], P.border[1], P.border[2]);
   doc.rect(RX, CHROME_TOP, RW, CHROME_BOTTOM - CHROME_TOP); doc.setDrawColor(0, 0, 0);
 
   /* 4 — Remit-to block (left) */
-  let by = bandHeader(doc, LX, 84, LW, 'PLEASE MAKE CHECKS PAYABLE AND REMIT TO', { h: 15, size: 8 });
-  fillRect(doc, LX, by, LW, 66, C.panel); // 99 → 165
-  txt(doc, provider.officeName, LX + 10, by + 16, { size: 10.5, bold: true, color: C.text });
-  txt(doc, provider.address, LX + 10, by + 30, { size: 9.5, bold: true, color: C.black });
-  txt(doc, `${provider.city}, ${provider.state} ${provider.zip}`, LX + 10, by + 43, { size: 9.5, bold: true, color: C.black });
-  doc.setDrawColor(C.border[0], C.border[1], C.border[2]); line(doc, LX + 10, by + 47, LR - 10, by + 47, 0.5); doc.setDrawColor(0, 0, 0);
-  txt(doc, 'Any questions please call between the hours of 10am', LX + 10, by + 56, { size: 8, bold: true, color: C.text });
-  txt(doc, `and 2pm at ${provider.phone}`, LX + 10, by + 64, { size: 8, bold: true, color: C.text });
+  let by = bandHeader(doc, LX, 84, LW, 'PLEASE MAKE CHECKS PAYABLE AND REMIT TO', { h: 15, size: 8, pal: P, mono });
+  fillRect(doc, LX, by, LW, 66, P.panel); // 99 → 165
+  outline(LX, by, LW, 66);
+  txt(doc, s(provider.officeName), LX + 10, by + 16, { size: 10.5, bold: true, color: P.text });
+  if (provider.address) txt(doc, s(provider.address), LX + 10, by + 30, { size: 9.5, bold: true, color: P.black });
+  if (cityStateZip) txt(doc, cityStateZip, LX + 10, by + 43, { size: 9.5, bold: true, color: P.black });
+  doc.setDrawColor(P.border[0], P.border[1], P.border[2]); line(doc, LX + 10, by + 47, LR - 10, by + 47, 0.5); doc.setDrawColor(0, 0, 0);
+  txt(doc, 'Any questions please call between the hours of 10am', LX + 10, by + 56, { size: 8, bold: true, color: P.text });
+  txt(doc, provider.phone ? `and 2pm at ${s(provider.phone)}` : 'and 2pm.', LX + 10, by + 64, { size: 8, bold: true, color: P.text });
 
   /* 5 — Patient address block (left) */
-  by = bandHeader(doc, LX, 171, LW, 'PATIENT ADDRESS', { h: 15, size: 8 }); // panel 186 → 238
-  fillRect(doc, LX, by, LW, CHROME_BOTTOM - by, C.panel);
-  txt(doc, 'PATIENT NAME', LX + 10, by + 13, { size: 6.5, bold: true, color: C.label });
-  txt(doc, val(patient.patientName), LX + 10, by + 27, { size: 10.5, bold: true, color: C.text });
-  txt(doc, 'PATIENT ADDRESS', LX + 10, by + 39, { size: 6.5, bold: true, color: C.label });
-  txt(doc, val(patient.fullAddress), LX + 10, by + 50, { size: 8.5, bold: true, color: C.text });
+  by = bandHeader(doc, LX, 171, LW, 'PATIENT ADDRESS', { h: 15, size: 8, pal: P, mono }); // panel 186 → 238
+  fillRect(doc, LX, by, LW, CHROME_BOTTOM - by, P.panel);
+  outline(LX, by, LW, CHROME_BOTTOM - by);
+  txt(doc, 'PATIENT NAME', LX + 10, by + 12, { size: 6.5, bold: true, color: P.label });
+  txt(doc, val(patient.patientName), LX + 10, by + 24, { size: 10.5, bold: true, color: P.text });
+  txt(doc, 'PATIENT ADDRESS', LX + 10, by + 34, { size: 6.5, bold: true, color: P.label });
+  // Patient address on two lines: street (line 1) then City, State ZIP+4 (line 2).
+  // If the street line is missing, the city/state/ZIP promotes to the first line so
+  // no blank gap is left. Both lines fit within the panel (bottom edge = 238).
+  const addrL1 = val(patient.address1) || val(patient.cityStateZip);
+  const addrL2 = val(patient.address1) ? val(patient.cityStateZip) : '';
+  txt(doc, addrL1, LX + 10, by + 44, { size: 8, bold: true, color: P.text });
+  if (addrL2) txt(doc, addrL2, LX + 10, by + 52, { size: 8, bold: true, color: P.text });
 
   /* 6 — Account summary (full width). Sits below the patient block with balanced
      spacing above the detailed table; its band matches the DETAILED INFORMATION
      header, and its column headers share the table-header size (8pt). */
-  bandHeader(doc, ML, 252, MR - ML, 'ACCOUNT SUMMARY', { h: 20, size: 9 });
+  bandHeader(doc, ML, 252, MR - ML, 'ACCOUNT SUMMARY', { h: 20, size: 9, pal: P, mono });
   const grid = (cols, top, h, fill) => {
     const cw = (MR - ML) / cols.length;
     fillRect(doc, ML, top, MR - ML, h, fill);
+    outline(ML, top, MR - ML, h, 0.5);
     cols.forEach((c, i) => {
       const cx = ML + cw * (i + 0.5);
       if (c.header) {
-        txt(doc, c.header, cx, top + h / 2 + 3, { size: 8, bold: true, align: 'center', color: C.white });
+        txt(doc, c.header, cx, top + h / 2 + 3, { size: 8, bold: true, align: 'center', color: P.white });
       } else {
-        if (c.pink) fillRect(doc, ML + cw * i, top, cw, h, C.pink);
-        if (!blank) txt(doc, dash(c.value), cx, top + h / 2 + 3, { size: 8, bold: true, align: 'center', color: c.color || C.text });
+        if (c.pink) fillRect(doc, ML + cw * i, top, cw, h, P.pink);
+        if (!blank) txt(doc, dash(c.value), cx, top + h / 2 + 3, { size: 8, bold: true, align: 'center', color: c.color || P.text });
       }
-      if (i > 0) { doc.setDrawColor(C.border[0], C.border[1], C.border[2]); line(doc, ML + cw * i, top, ML + cw * i, top + h, 0.4); doc.setDrawColor(0, 0, 0); }
+      if (i > 0) { doc.setDrawColor(P.border[0], P.border[1], P.border[2]); line(doc, ML + cw * i, top, ML + cw * i, top + h, 0.4); doc.setDrawColor(0, 0, 0); }
     });
   };
-  grid([{ header: 'ACCOUNT NUMBER' }, { header: 'STATEMENT DATE' }, { header: 'DATE LAST PAID' }, { header: 'LAST PAID AMOUNT' }], 272, 18, C.navy);
+  grid([{ header: 'ACCOUNT NUMBER' }, { header: 'STATEMENT DATE' }, { header: 'DATE LAST PAID' }, { header: 'LAST PAID AMOUNT' }], 272, 18, P.navy);
   grid([
-    { value: patient.accountNumber }, { value: stmt.statementDate },
-    { value: stmt.lastPaidDate }, { value: stmt.summary.patientPaid ? money(stmt.summary.patientPaid) : '' },
-  ], 290, 20, C.panel2);
-  grid([{ header: 'INSURANCE PENDING' }, { header: 'PAST DUE' }, { header: 'COLLECTIONS' }, { header: 'FINANCE CHARGE' }, { header: 'BUDGET AMOUNT' }], 310, 18, C.navy);
+    { value: patient.accountNumber }, { value: mdy(stmt.statementDate) },
+    { value: mdy(stmt.lastPaidDate) }, { value: stmt.summary.patientPaid ? money(stmt.summary.patientPaid) : '' },
+  ], 290, 20, P.panel2);
+  grid([{ header: 'INSURANCE PENDING' }, { header: 'PAST DUE' }, { header: 'COLLECTIONS' }, { header: 'FINANCE CHARGE' }, { header: 'BUDGET AMOUNT' }], 310, 18, P.navy);
   grid([
-    { value: '' }, { value: stmt.summary.amountDue ? money(stmt.summary.amountDue) : '', color: C.red, pink: true },
+    { value: '' }, { value: stmt.summary.amountDue ? money(stmt.summary.amountDue) : '', color: P.red, pink: true },
     { value: '' }, { value: '' }, { value: '' },
-  ], 328, 20, C.panel2);
+  ], 328, 20, P.panel2);
   } // end first-page-only chrome (sections 2–6)
 
   /* 7 — Detailed information header + column header row.
      Page 1 slots this beneath the account summary with balanced spacing; every
      continuation page floats it to the top margin so the table stands alone. */
-  const detailHdrTop = isFirst ? 362 : 30;
-  bandHeader(doc, ML, detailHdrTop, MR - ML, 'DETAILED INFORMATION', { h: 20, size: 9 });
+  const detailHdrTop = isFirst ? 356 : 30;
+  bandHeader(doc, ML, detailHdrTop, MR - ML, 'DETAILED INFORMATION', { h: 20, size: 9, pal: P, mono });
   const dh = 24, dTop = detailHdrTop + 20;
-  fillRect(doc, DCOL.left, dTop, DCOL.right - DCOL.left, dh, C.navy);
-  fillRect(doc, DCOL.payR, dTop, DCOL.right - DCOL.payR, dh, C.navyDark);
+  fillRect(doc, DCOL.left, dTop, DCOL.right - DCOL.left, dh, P.navy);
+  fillRect(doc, DCOL.payR, dTop, DCOL.right - DCOL.payR, dh, P.navyDark);
+  outline(DCOL.left, dTop, DCOL.right - DCOL.left, dh);
   // Uniform, clearly-visible bold column headers — one size, one font (Helvetica).
-  const DH = { size: 8, bold: true, align: 'center', color: C.white };
+  const DH = { size: 8, bold: true, align: 'center', color: P.white };
   txt(doc, 'DATE', centre(DCOL.left, DCOL.dateR), dTop + 15, DH);
   txt(doc, 'SERVICE DESCRIPTION', centre(DCOL.dateR, DCOL.descR), dTop + 15, DH);
   txt(doc, 'INS MSG*', centre(DCOL.descR, DCOL.insR), dTop + 15, DH);
@@ -432,7 +486,7 @@ function drawPage(doc, stmt, pageRows, pageIndex, provider, patient) {
   let lastBottom = dTop + dh;
 
   const cellFrame = (top, h) => {
-    doc.setDrawColor(C.border[0], C.border[1], C.border[2]); doc.setLineWidth(0.4);
+    doc.setDrawColor(P.border[0], P.border[1], P.border[2]); doc.setLineWidth(0.4);
     doc.rect(DCOL.left, top, DCOL.right - DCOL.left, h);
     dividers.forEach((x) => line(doc, x, top, x, top + h, 0.4));
     doc.setDrawColor(0, 0, 0);
@@ -464,34 +518,34 @@ function drawPage(doc, stmt, pageRows, pageIndex, provider, patient) {
       lines.forEach((ln) => {
         const y = rowTop + ln.y;
         if (ln.type === 'patient') {
-          txt(doc, fit(doc, `PATIENT: ${patient.patientName}  - ${patient.accountNumber}`, descMaxW, 7.5, true), dx, y, { size: 7.5, bold: true, color: C.text });
+          txt(doc, fit(doc, `PATIENT: ${patient.patientName}  - ${patient.accountNumber}`, descMaxW, 7.5, true), dx, y, { size: 7.5, bold: true, color: P.text });
         } else if (ln.type === 'provider') {
           let x = dx;
-          txt(doc, 'PROVIDER: ', x, y, { size: 7.5, bold: true, color: C.text });
+          txt(doc, 'PROVIDER: ', x, y, { size: 7.5, bold: true, color: P.text });
           x += width(doc, 'PROVIDER: ', 7.5, true);
           const cptStr = `CPT: ${s(r.cpt)}`;
           const provRoom = descMaxW - width(doc, 'PROVIDER: ', 7.5, true) - 8 - width(doc, cptStr, 7.5, true);
           const prov = fit(doc, s(r.renderingProvider) || '—', Math.max(24, provRoom), 7.5, false);
-          txt(doc, prov, x, y, { size: 7.5, color: C.text });
+          txt(doc, prov, x, y, { size: 7.5, color: P.text });
           x += width(doc, prov, 7.5, false) + 8;
-          txt(doc, cptStr, x, y, { size: 7.5, bold: true, color: C.text });
+          txt(doc, cptStr, x, y, { size: 7.5, bold: true, color: P.text });
         } else if (ln.type === 'service') {
-          txt(doc, fit(doc, first(r, ['dateOfService', 'statementDate']), dateMaxW, 7.5, false), dateX, y, { size: 7.5, color: C.text });
-          txt(doc, fit(doc, s(r.procedure) || '—', descMaxW, 7.5, false), dx, y, { size: 7.5, color: C.text });
-          txt(doc, money(charge), DCOL.chgR - 7, y, { size: 8, bold: true, align: 'right', color: C.text });
+          txt(doc, fit(doc, mdy(first(r, ['dateOfService', 'statementDate'])), dateMaxW, 7.5, false), dateX, y, { size: 7.5, color: P.text });
+          txt(doc, fit(doc, s(r.procedure) || '—', descMaxW, 7.5, false), dx, y, { size: 7.5, color: P.text });
+          txt(doc, money(charge), DCOL.chgR - 7, y, { size: 8, bold: true, align: 'right', color: P.text });
         } else if (ln.type === 'payment') {
-          txt(doc, fit(doc, s(r.paymentDate), dateMaxW, 7.5, false), dateX, y, { size: 7.5, color: C.text });
-          txt(doc, fit(doc, `Payment - ${payer}`, descMaxW, 7.5, false), dx, y, { size: 7.5, color: C.text });
-          txt(doc, money(insPmt), DCOL.payR - 7, y, { size: 8, bold: true, align: 'right', color: C.green });
+          txt(doc, fit(doc, mdy(r.paymentDate), dateMaxW, 7.5, false), dateX, y, { size: 7.5, color: P.text });
+          txt(doc, fit(doc, `Payment - ${payer}`, descMaxW, 7.5, false), dx, y, { size: 7.5, color: P.text });
+          txt(doc, money(insPmt), DCOL.payR - 7, y, { size: 8, bold: true, align: 'right', color: P.green });
         } else if (ln.type === 'adjustment') {
-          txt(doc, fit(doc, s(r.adjustmentDate), dateMaxW, 7.5, false), dateX, y, { size: 7.5, color: C.text });
-          txt(doc, fit(doc, `Adjustment - ${payer}`, descMaxW, 7.5, false), dx, y, { size: 7.5, color: C.text });
-          txt(doc, money(insAdj), DCOL.payR - 7, y, { size: 8, bold: true, align: 'right', color: C.text });
+          txt(doc, fit(doc, mdy(r.adjustmentDate), dateMaxW, 7.5, false), dateX, y, { size: 7.5, color: P.text });
+          txt(doc, fit(doc, `Adjustment - ${payer}`, descMaxW, 7.5, false), dx, y, { size: 7.5, color: P.text });
+          txt(doc, money(insAdj), DCOL.payR - 7, y, { size: 8, bold: true, align: 'right', color: P.text });
         } else if (ln.type === 'message') {
-          txt(doc, fit(doc, s(r.balanceAppliedTo), descMaxW, 7.5, false), dx, y, { size: 7.5, color: C.label });
+          txt(doc, fit(doc, s(r.balanceAppliedTo), descMaxW, 7.5, false), dx, y, { size: 7.5, color: P.label });
         } else if (ln.type === 'balance') {
-          txt(doc, 'Balance Amount', dx, y, { size: 7.5, bold: true, color: C.text });
-          txt(doc, money(resp), DCOL.right - 7, y, { size: 8.5, bold: true, align: 'right', color: C.black });
+          txt(doc, 'Balance Amount', dx, y, { size: 7.5, bold: true, color: P.text });
+          txt(doc, money(resp), DCOL.right - 7, y, { size: 8.5, bold: true, align: 'right', color: P.black });
         }
       });
       lastBottom = rowTop + height;
@@ -504,17 +558,23 @@ function drawPage(doc, stmt, pageRows, pageIndex, provider, patient) {
   doc.rect(DCOL.payR, dTop, DCOL.right - DCOL.payR, lastBottom - dTop);
   doc.setLineWidth(0.7);
 
-  /* 8 — Footer: navy rule + alert badge + notice (pinned near the page bottom) */
+  /* 8 — Footer: rule + alert badge + notice (pinned near the page bottom) */
   const fy = Math.max(FOOTER_MIN_TOP, lastBottom + 14);
-  fillRect(doc, ML, fy, MR - ML, 2.5, C.navy);
+  fillRect(doc, ML, fy, MR - ML, 2.5, P.navy);
+  if (mono) { doc.setDrawColor(0, 0, 0); doc.setLineWidth(1); doc.line(ML, fy + 1.25, MR, fy + 1.25); doc.setLineWidth(0.7); }
   const bcx = ML + 10;
-  doc.setFillColor(C.red[0], C.red[1], C.red[2]);
-  doc.circle(bcx, fy + 26, 10, 'F');
-  txt(doc, '!', bcx, fy + 30, { size: 13, bold: true, align: 'center', color: C.white });
-  txt(doc, 'Please Pay Promptly', ML + 28, fy + 22, { size: 11, bold: true, color: C.text });
-  txt(doc, 'BALANCES EXCEEDING 90 DAYS MAY BE SUBJECT TO COLLECTION PROCEDURES', ML + 28, fy + 36, { size: 8, bold: true, color: C.red });
+  if (mono) {
+    doc.setDrawColor(0, 0, 0); doc.setLineWidth(1.1); doc.circle(bcx, fy + 26, 10, 'S'); doc.setLineWidth(0.7);
+    txt(doc, '!', bcx, fy + 30, { size: 13, bold: true, align: 'center', color: P.black });
+  } else {
+    doc.setFillColor(C.red[0], C.red[1], C.red[2]);
+    doc.circle(bcx, fy + 26, 10, 'F');
+    txt(doc, '!', bcx, fy + 30, { size: 13, bold: true, align: 'center', color: C.white });
+  }
+  txt(doc, 'Please Pay Promptly', ML + 28, fy + 22, { size: 11, bold: true, color: P.text });
+  txt(doc, 'BALANCES EXCEEDING 90 DAYS MAY BE SUBJECT TO COLLECTION PROCEDURES', ML + 28, fy + 36, { size: 8, bold: true, color: P.red });
 
-  if (!blank && stmt.pages > 1) txt(doc, `Page ${pageIndex + 1} of ${stmt.pages}`, MR, fy + 36, { size: 7, align: 'right', color: C.label });
+  if (!blank && stmt.pages > 1) txt(doc, `Page ${pageIndex + 1} of ${stmt.pages}`, MR, fy + 36, { size: 7, align: 'right', color: P.label });
 
   return 0;
 }
@@ -522,13 +582,15 @@ function drawPage(doc, stmt, pageRows, pageIndex, provider, patient) {
 /** Derive the provider / patient / statement drawing context for one group. */
 function buildContext(stmtGroup) {
   const sample = stmtGroup.rows[0] || {};
+  // Provider/office details come ONLY from the uploaded statement row — never a
+  // hardcoded fallback. A missing field renders blank rather than fabricated data.
   const provider = {
-    officeName: first(sample, ['officeName', 'renderingProvider']) || TEMPLATE.officeName,
-    address: s(sample.address) || TEMPLATE.address,
-    city: s(sample.city) || TEMPLATE.city,
-    state: s(sample.state) || TEMPLATE.state,
-    zip: s(sample.zipCode) || TEMPLATE.zip,
-    phone: s(sample.phone) || TEMPLATE.phone,
+    officeName: first(sample, ['officeName', 'renderingProvider']) || '',
+    address: s(sample.address),
+    city: s(sample.city),
+    state: s(sample.state),
+    zip: s(sample.zipCode),
+    phone: s(sample.phone),
   };
   const fullAddress = [s(sample.patientAddress1), s(sample.patientAddress2)]
     .filter(Boolean)
@@ -573,13 +635,18 @@ export function buildStatementDoc(stmtGroup) {
  * Build a single-page blank template PDF — the full statement layout (all boxes,
  * labels and headings) with no patient or line-item content. Used for the
  * "View Template" preview so the structure is clearly visible on its own.
+ *
+ * @param {boolean} mono  When true, renders a completely blank & white
+ *                        (monochrome) statement — white fills, black outlines
+ *                        and text. When false, the colored template.
  */
-export function buildBlankTemplateDoc() {
+export function buildBlankTemplateDoc(mono = false) {
   const doc = new jsPDF({ unit: 'pt', format: 'letter' });
-  const provider = { ...TEMPLATE };
+  const provider = { ...EMPTY_PROVIDER };
   const patient = { patientName: '', accountNumber: '', address1: '', cityStateZip: '', fullAddress: '' };
   const stmt = {
     blank: true,
+    mono: !!mono,
     pages: 1,
     statementDate: '',
     lastPaidDate: '',
@@ -595,6 +662,12 @@ export function buildBlankTemplateDoc() {
   };
   drawPage(doc, stmt, [], 0, provider, patient);
   return doc;
+}
+
+/** Download the blank statement template — white/monochrome or colored. */
+export function downloadBlankTemplate(mono = false) {
+  const doc = buildBlankTemplateDoc(mono);
+  doc.save(`Statement_Template_${mono ? 'White' : 'Color'}.pdf`);
 }
 
 function safeName(str) {

@@ -39,4 +39,43 @@ export const env = {
     password: process.env.SUPER_ADMIN_PASSWORD || 'change-me-in-env',
     name: process.env.SUPER_ADMIN_NAME || 'Super Administrator',
   },
+
+  google: {
+    // Google Address Validation API key — server-side only, never sent to the client.
+    addressValidationKey: process.env.GOOGLE_ADDRESS_VALIDATION_API_KEY || '',
+    addressRegion: process.env.GOOGLE_ADDRESS_VALIDATION_REGION || 'US',
+
+    // Live SKU usage / free-tier reporting via Google Cloud. Reads REAL month-to-date
+    // Address Validation call volume from the Cloud Monitoring API and the SKU's free
+    // threshold + price from the Cloud Billing Catalog API. All server-side only.
+    //   - projectId: the GCP project that owns the Address Validation API key.
+    //   - serviceAccountJson: inline service-account JSON (string) OR leave blank and
+    //     set GOOGLE_APPLICATION_CREDENTIALS to a key-file path (ADC). The account
+    //     needs roles/monitoring.viewer (and optionally roles/billing.viewer).
+    //   - freeMonthlyOverride: optional manual free-call allowance if the Billing
+    //     Catalog is not enabled (0 = derive from the catalog / unknown).
+    //   - usesUspsCass mirrors the request flag so the reported SKU is accurate.
+    gcpProjectId: process.env.GCP_PROJECT_ID || '',
+    serviceAccountJson: process.env.GCP_SERVICE_ACCOUNT_JSON || '',
+    billingCatalogEnabled: (process.env.GOOGLE_BILLING_CATALOG_ENABLED || 'true') !== 'false',
+    addressValidationFreeMonthly: Number(process.env.GOOGLE_ADDRESS_VALIDATION_FREE_MONTHLY || 0),
+    usesUspsCass: (process.env.GOOGLE_ADDRESS_VALIDATION_USPS_CASS || 'true') !== 'false',
+  },
+
+  s3: {
+    // Durable storage for generated statement PDFs. All values are server-side
+    // only; credentials are never exposed to the browser. When accessKeyId /
+    // secretAccessKey are omitted the AWS default credential provider chain is
+    // used (IAM role, shared config, etc.), which is preferred in production.
+    region: process.env.S3_REGION || process.env.AWS_REGION || 'us-east-1',
+    bucket: process.env.S3_BUCKET || '',
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
+    // Key prefix (folder) under which statement PDFs are stored.
+    keyPrefix: process.env.S3_KEY_PREFIX || 'statements',
+    // Lifetime of the presigned download URLs handed to the browser.
+    presignExpirySeconds: Number(process.env.S3_PRESIGN_EXPIRY_SECONDS || 300),
+    // Hard upper bound on an uploaded PDF (defense against oversized payloads).
+    maxPdfBytes: Number(process.env.S3_MAX_PDF_BYTES || 26214400), // 25 MiB
+  },
 };

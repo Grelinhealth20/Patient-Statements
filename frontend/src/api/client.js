@@ -77,9 +77,24 @@ api.interceptors.response.use(
 /** Statement Generator endpoints (DB-backed patient/DOS/generation workflow). */
 export const statementsApi = {
   import: (fileName, rows) => api.post('/statements/import', { fileName, rows }).then((r) => r.data),
-  patients: () => api.get('/statements/patients').then((r) => r.data),
+  patients: (page = 1, pageSize = 10) =>
+    api.get('/statements/patients', { params: { page, pageSize } }).then((r) => r.data),
+  pendingPatients: () => api.get('/statements/patients/pending').then((r) => r.data),
   patientDos: (key) => api.get(`/statements/patients/${encodeURIComponent(key)}/dos`).then((r) => r.data),
+  validateAddress: (key) =>
+    api.post(`/statements/patients/${encodeURIComponent(key)}/validate-address`).then((r) => r.data),
+  // Live free-tier / SKU usage status for the Address Validation API.
+  addressValidationStatus: () =>
+    api.get('/statements/address-validation/status').then((r) => r.data),
   generate: (key) => api.post('/statements/generate', { key }).then((r) => r.data),
+  // Archive a rendered statement PDF to S3 (raw PDF bytes, not JSON).
+  storePdf: (statementId, blob) =>
+    api
+      .post(`/statements/${statementId}/pdf`, blob, { headers: { 'Content-Type': 'application/pdf' } })
+      .then((r) => r.data),
+  // Fetch a short-lived presigned URL to download a stored statement PDF.
+  downloadUrl: (statementId) =>
+    api.get(`/statements/${statementId}/download`).then((r) => r.data),
 };
 
 export default api;

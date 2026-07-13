@@ -7,6 +7,12 @@
 // the rewrite in vercel.json.
 import { createApp } from '../backend/src/app.js';
 
+// Give the function headroom for the cold-start path (lazy DB pool + schema init)
+// and outbound calls to Google (Address Validation / Billing Catalog) and S3, so a
+// first request on a fresh instance never trips Vercel's default timeout. Valid on
+// Hobby (≤60s) and Pro (≤300s).
+export const config = { maxDuration: 30 };
+
 const app = createApp();
 
 export default app;
