@@ -5,6 +5,7 @@ import {
   importRows,
   listPatients,
   financialSummary,
+  addressQueue,
   listPendingPatients,
   listPatientDos,
   validatePatientAddress,
@@ -28,6 +29,7 @@ router.get('/ping', (req, res) => {
 router.post('/import', importRows);
 router.get('/patients', listPatients);
 router.get('/summary', financialSummary);
+router.get('/patients/address-queue', addressQueue);
 router.get('/patients/pending', listPendingPatients);
 router.get('/patients/:key/dos', listPatientDos);
 router.post('/patients/:key/validate-address', validatePatientAddress);

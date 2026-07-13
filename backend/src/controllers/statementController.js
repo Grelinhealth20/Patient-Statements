@@ -261,11 +261,13 @@ export async function listPatients(req, res, next) {
          MAX(d.account_number)                           AS accountNumber,
          COUNT(*)                                        AS dosCount,
          SUM(d.status = 'pending')                       AS pendingCount,
-         SUM(d.status = 'generated')                     AS generatedCount
+         SUM(d.status = 'generated')                     AS generatedCount,
+         MAX(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(d.data, '$.addressValidationProvider')) IN ('usps','google')
+                  THEN 1 ELSE 0 END)                     AS addrValidated
        FROM statement_dos d
        WHERE ${uidClause(req, 'd.user_id')}
        GROUP BY d.patient_key
-       ORDER BY MAX(d.patient_name)
+       ORDER BY addrValidated ASC, MAX(d.patient_name)
        LIMIT ${pageSize} OFFSET ${offset}`,
       { userId }
     );
@@ -424,6 +426,48 @@ export async function financialSummary(req, res, next) {
       dosCount: Number(row.dosCount || 0),
       dosWithAmount: Number(row.dosWithAmount || 0),
       computedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* ------------------------------------ GET /patients/address-queue (verify all) */
+
+/**
+ * Lightweight roster of every patient with their address-validation state, used to
+ * drive the "Verify All Addresses" batch. Returns each patient's key, name, whether
+ * their address is already USPS-verified, and whether they have an address on file —
+ * so the client can validate exactly the ones that still need it, one by one.
+ * Unpaginated by design (it must cover every patient, not just the current page).
+ */
+export async function addressQueue(req, res, next) {
+  try {
+    const pool = getPool();
+    const [rows] = await pool.query(
+      `SELECT d.patient_key AS \`key\`,
+              MAX(d.patient_name) AS patientName,
+              MAX(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(d.data, '$.addressValidationProvider')) IN ('usps','google')
+                       THEN 1 ELSE 0 END) AS validated,
+              MAX(CASE WHEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT(d.data, '$.patientAddress1')), '') <> ''
+                         OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(d.data, '$.patientAddress2')), '') <> ''
+                       THEN 1 ELSE 0 END) AS hasAddress
+       FROM statement_dos d
+       WHERE ${uidClause(req, 'd.user_id')}
+       GROUP BY d.patient_key
+       ORDER BY MAX(d.patient_name)`,
+      { userId: req.user.id }
+    );
+    const patients = rows.map((r) => ({
+      key: r.key,
+      patientName: r.patientName || '',
+      validated: !!Number(r.validated),
+      hasAddress: !!Number(r.hasAddress),
+    }));
+    return res.json({
+      patients,
+      total: patients.length,
+      unvalidated: patients.filter((p) => !p.validated).length,
     });
   } catch (err) {
     next(err);

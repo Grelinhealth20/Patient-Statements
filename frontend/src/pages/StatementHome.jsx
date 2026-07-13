@@ -471,6 +471,146 @@ function ApiStatusModal({ status, onClose }) {
   );
 }
 
+/**
+ * "Verify All Addresses" batch popup. Loads the full patient roster, then validates
+ * every not-yet-verified address via USPS in real time (a small concurrency pool so
+ * many run "one by one" without hammering the API), with a live animated progress
+ * bar and running success/failure counts. On completion it refreshes the table so
+ * addresses that could NOT be validated sort to the top. All calls are real USPS
+ * validations through the existing endpoint — no mock data.
+ */
+function VerifyAllModal({ onClose, onDone }) {
+  const [phase, setPhase] = useState('loading'); // loading | running | done | empty | error
+  const [stats, setStats] = useState({ total: 0, processed: 0, ok: 0, failed: 0 });
+  const [current, setCurrent] = useState('');
+  const [failedList, setFailedList] = useState([]);
+  const [error, setError] = useState('');
+  const cancelRef = useRef(false);
+
+  useEffect(() => {
+    cancelRef.current = false;
+    (async () => {
+      let queue;
+      try {
+        const { patients } = await statementsApi.addressQueue();
+        queue = (patients || []).filter((p) => !p.validated);
+      } catch {
+        setError('Could not load the patient list.');
+        setPhase('error');
+        return;
+      }
+      if (!queue.length) { setPhase('empty'); return; }
+      setStats({ total: queue.length, processed: 0, ok: 0, failed: 0 });
+      setPhase('running');
+
+      const CONCURRENCY = 5;
+      const fails = [];
+      let ok = 0, failed = 0, idx = 0;
+      const worker = async () => {
+        while (idx < queue.length && !cancelRef.current) {
+          const p = queue[idx++];
+          setCurrent(p.patientName || p.key);
+          try {
+            await statementsApi.validateAddress(p.key);
+            ok += 1;
+          } catch (err) {
+            failed += 1;
+            fails.push({ key: p.key, name: p.patientName || p.key, reason: err?.response?.data?.message || 'Could not validate' });
+          }
+          setStats((st) => ({ ...st, processed: st.processed + 1, ok, failed }));
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));
+      setFailedList(fails);
+      setCurrent('');
+      setPhase('done');
+      onDone(); // refresh the table so unvalidated addresses move to the top
+    })();
+    return () => { cancelRef.current = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const { total, processed, ok, failed } = stats;
+  const pct = total ? Math.round((processed / total) * 100) : 0;
+  const running = phase === 'running';
+
+  const close = () => { cancelRef.current = true; onClose(); };
+
+  return (
+    <div className="api-modal-overlay" role="dialog" aria-modal="true" aria-label="Verify all patient addresses" onClick={running ? undefined : close}>
+      <div className="api-modal va-modal" onClick={(e) => e.stopPropagation()}>
+        {!running && <button className="api-modal-x" onClick={close} aria-label="Close">×</button>}
+        <div className="api-modal-head">
+          <span className={`va-spark${running ? ' spin' : ''}`} aria-hidden="true"><ShieldCheckIcon /></span>
+          <div>
+            <h3>Verify All Patient Addresses</h3>
+            <p className="api-modal-provider">
+              {phase === 'loading' && 'Loading patients…'}
+              {running && `Validating with USPS · ${processed} of ${total}`}
+              {phase === 'done' && 'Validation complete'}
+              {phase === 'empty' && 'Nothing to validate'}
+              {phase === 'error' && 'Could not start'}
+            </p>
+          </div>
+        </div>
+
+        {error && <div className="alert alert-error" role="alert" style={{ margin: '0 0 12px' }}>{error}</div>}
+
+        {(running || phase === 'done') && (
+          <>
+            <div className="va-bar" aria-hidden="true">
+              <div className={`va-bar-fill${running ? ' striped' : ''}`} style={{ width: `${pct}%` }} />
+            </div>
+            <div className="va-progress-row">
+              <span className="va-pct">{pct}%</span>
+              <span className="va-counts">
+                <span className="va-ok">✓ {ok} verified</span>
+                <span className="va-fail">✕ {failed} failed</span>
+              </span>
+            </div>
+            {running && (
+              <p className="va-current">
+                <Spinner /> {current ? <>Validating <strong>{current}</strong>…</> : 'Working…'}
+              </p>
+            )}
+          </>
+        )}
+
+        {phase === 'done' && (
+          <div className="va-summary">
+            <p className="va-done-line">
+              <strong>{ok}</strong> address{ok === 1 ? '' : 'es'} verified · <strong>{failed}</strong> could not be validated.
+            </p>
+            {failed > 0 && (
+              <>
+                <p className="va-note">The {failed} address{failed === 1 ? '' : 'es'} below could not be validated and {failed === 1 ? 'has' : 'have'} been moved to the top of the table for review.</p>
+                <ul className="va-fail-list">
+                  {failedList.slice(0, 50).map((f) => (
+                    <li key={f.key}><strong>{f.name}</strong> — {f.reason}</li>
+                  ))}
+                  {failedList.length > 50 && <li>…and {failedList.length - 50} more.</li>}
+                </ul>
+              </>
+            )}
+          </div>
+        )}
+
+        {phase === 'empty' && (
+          <p className="confirm-text">Every patient address is already verified — nothing to do.</p>
+        )}
+
+        <div className="va-actions">
+          {running ? (
+            <button className="btn-secondary" onClick={() => { cancelRef.current = true; }}>Stop</button>
+          ) : (
+            <button className="btn-primary btn-compact" onClick={close}>Done</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function StatementHome() {
   const { push } = useToast();
   const inputRef = useRef(null);
@@ -491,6 +631,7 @@ export default function StatementHome() {
   const [validating, setValidating] = useState(''); // patient key being address-validated
   const [savingAddress, setSavingAddress] = useState(''); // patient key whose edited address is saving
   const [apiStatus, setApiStatus] = useState(null); // live Address Validation API plan status (popup)
+  const [verifyAllOpen, setVerifyAllOpen] = useState(false); // "Verify All Addresses" batch popup
   const [tierStatus, setTierStatus] = useState(null); // live billing tier for the table's Tier column
   const [downloading, setDownloading] = useState(''); // patient key whose stored PDF is downloading
   const [expanded, setExpanded] = useState({}); // key -> { open, loading, dos }
@@ -794,6 +935,12 @@ export default function StatementHome() {
   return (
     <div className="stmt-view stmt-dash">
       <ApiStatusModal status={apiStatus} onClose={() => setApiStatus(null)} />
+      {verifyAllOpen && (
+        <VerifyAllModal
+          onClose={() => setVerifyAllOpen(false)}
+          onDone={() => { loadPage(1); loadTier(); }}
+        />
+      )}
 
       {/* Command hero + KPI row */}
       <header className="dash-hero">
@@ -911,10 +1058,20 @@ export default function StatementHome() {
             <h2>Patient Statements</h2>
             <span className="count-badge">{totals.patients}</span>
           </div>
-          <div className="upload-meta" style={{ gap: 16, fontSize: 14, fontWeight: 700, color: 'var(--text-soft)' }}>
-            <span>{totals.dos} DOS</span>
-            <span>{totals.generated} generated</span>
-            <span>{totals.pending} pending</span>
+          <div className="panel-head-actions">
+            <button
+              className="btn-verify-all"
+              onClick={() => setVerifyAllOpen(true)}
+              disabled={!totals.patients}
+              title="Validate every patient's address with USPS, one by one. Unverified addresses move to the top."
+            >
+              <ShieldCheckIcon /> Verify All Addresses
+            </button>
+            <div className="upload-meta" style={{ gap: 16, fontSize: 14, fontWeight: 700, color: 'var(--text-soft)' }}>
+              <span>{totals.dos} DOS</span>
+              <span>{totals.generated} generated</span>
+              <span>{totals.pending} pending</span>
+            </div>
           </div>
         </div>
 

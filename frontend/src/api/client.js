@@ -82,6 +82,8 @@ export const statementsApi = {
   pendingPatients: () => api.get('/statements/patients/pending').then((r) => r.data),
   // Live financial summary (real DB aggregate): total outstanding Patient Responsibility.
   summary: () => api.get('/statements/summary').then((r) => r.data),
+  // Roster of every patient + address-validation state (drives "Verify All Addresses").
+  addressQueue: () => api.get('/statements/patients/address-queue').then((r) => r.data),
   patientDos: (key) => api.get(`/statements/patients/${encodeURIComponent(key)}/dos`).then((r) => r.data),
   validateAddress: (key) =>
     api.post(`/statements/patients/${encodeURIComponent(key)}/validate-address`).then((r) => r.data),
