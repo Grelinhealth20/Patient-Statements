@@ -207,29 +207,51 @@ const IconClock = () => <Svg><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 
 const IconCheck = () => <Svg><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><path d="M22 4L12 14.01l-3-3" /></Svg>;
 const IconUpload = () => <Svg strokeWidth="1.7"><path d="M12 16V4M8 8l4-4 4 4" /><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" /></Svg>;
 
-/** Build a descriptive tooltip for the Address Validation tier pill. */
-function tierTitle(s) {
-  if (!s) return 'Checking Address Validation billing tier…';
-  const parts = [];
-  if (s.sku?.name) parts.push(s.sku.name);
-  if (s.freeMonthly != null) {
-    parts.push(s.callsThisMonth != null
-      ? `${Number(s.callsThisMonth).toLocaleString()} / ${Number(s.freeMonthly).toLocaleString()} free calls used this month`
-      : `${Number(s.freeMonthly).toLocaleString()} free calls/month`);
-  }
-  if (s.sku?.unitPrice != null) parts.push(`$${s.sku.unitPrice}/call beyond free`);
-  if (s.reason) parts.push(s.reason);
-  return parts.join(' · ') || 'Address Validation billing tier';
+/** Human labels for which provider verified an address (USPS primary / Google backup). */
+function providerLabel(p) {
+  if (p === 'usps') return 'USPS Address Validation (primary · free)';
+  if (p === 'google') return 'Google Address Validation (backup)';
+  return 'address validation';
+}
+function providerShort(p) {
+  if (p === 'usps') return 'USPS';
+  if (p === 'google') return 'Google';
+  return 'verified';
 }
 
-/** Live Address Validation billing tier pill: Free Tier / Paid / Unknown. */
+/** Build a descriptive tooltip for the Address Validation provider pill. */
+function tierTitle(s) {
+  if (!s) return 'Checking address validation provider…';
+  const parts = [];
+  if (s.primary === 'usps') {
+    parts.push(`${s.provider || 'USPS Address Validation'} — primary · real-time · free (no per-call charge)`);
+    if (s.uspsCallsThisMonth != null) parts.push(`${Number(s.uspsCallsThisMonth).toLocaleString()} USPS validations this month`);
+    const b = s.backup;
+    if (b?.sku?.name) parts.push(`Backup: ${b.sku.name}${b.sku.unitPrice != null ? ` ($${b.sku.unitPrice}/call beyond free)` : ''}`);
+  } else {
+    if (s.sku?.name) parts.push(s.sku.name);
+    if (s.freeMonthly != null) {
+      parts.push(s.callsThisMonth != null
+        ? `${Number(s.callsThisMonth).toLocaleString()} / ${Number(s.freeMonthly).toLocaleString()} free calls used this month`
+        : `${Number(s.freeMonthly).toLocaleString()} free calls/month`);
+    }
+    if (s.sku?.unitPrice != null) parts.push(`$${s.sku.unitPrice}/call beyond free`);
+  }
+  if (s.reason) parts.push(s.reason);
+  return parts.join(' · ') || 'Address validation provider';
+}
+
+/** Live address-validation provider pill: USPS (primary) / Free Tier / Paid / Unknown. */
 function TierPill({ status }) {
   if (!status) {
     return <span className="tier-pill tier-loading" title={tierTitle(null)}>Checking…</span>;
   }
   const v = status.verdict;
   const cls = v === 'FREE' ? 'tier-free' : v === 'PAYMENT' ? 'tier-paid' : 'tier-unknown';
-  const label = v === 'FREE' ? 'Free Tier' : v === 'PAYMENT' ? 'Paid' : 'Unknown';
+  // With USPS primary the pill names the provider; otherwise it shows the Google tier.
+  const label = status.primary === 'usps'
+    ? 'USPS · Free'
+    : v === 'FREE' ? 'Free Tier' : v === 'PAYMENT' ? 'Paid' : 'Unknown';
   return (
     <span className={`tier-pill ${cls}`} title={tierTitle(status)}>
       <span className="tier-dot" aria-hidden="true" />{label}
@@ -258,15 +280,18 @@ function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, d
         <td>
           <AddressCell addr={p.patientAddress} />
           {p.addressValidated ? (
-            <span className="addr-verified" title="Address validated with Google — one-time per patient">
-              <ShieldCheckIcon /> Address verified
+            <span
+              className={`addr-verified prov-${p.addressValidationProvider || 'unknown'}`}
+              title={`Address verified via ${providerLabel(p.addressValidationProvider)}${p.addressValidationVerdict ? ` — ${p.addressValidationVerdict}` : ''}${p.addressValidatedAt ? ` on ${fmtDate(p.addressValidatedAt)}` : ''} (one-time per patient)`}
+            >
+              <ShieldCheckIcon /> Verified · {providerShort(p.addressValidationProvider)}
             </span>
           ) : (
             <button
               className="btn-validate"
               disabled={validating}
               onClick={(e) => { e.stopPropagation(); onValidate(p.key); }}
-              title="Validate & standardize this patient's address via Google (one-time per patient)"
+              title="Validate & standardize this patient's address — USPS (primary), Google (backup). One-time per patient."
             >
               {validating
                 ? <span className="btn-inline"><Spinner dark /> Validating…</span>
@@ -362,16 +387,19 @@ function ApiStatusModal({ status, onClose }) {
   const usage = status.usage || null;
   // Prefer the usage-derived verdict (FREE/PAYMENT from real consumption); fall back
   // to the validate-call billing verdict; else UNKNOWN.
+  const isUsps = status.provider ? /usps/i.test(status.provider) : status.plan === 'free';
   const verdict = usage?.verdict || status.verdict || 'UNKNOWN';
   const cls = verdict === 'FREE' ? 'v-free' : verdict === 'PAYMENT' ? 'v-payment' : 'v-unknown';
-  const label = verdict === 'FREE' ? 'FREE TIER' : verdict === 'PAYMENT' ? 'PAYMENT' : 'UNKNOWN';
-  const sub = verdict === 'FREE'
-    ? 'Within the SKU’s free monthly allowance — not charged'
-    : verdict === 'PAYMENT'
-      ? 'Free monthly allowance exhausted — usage is billed'
-      : (usage && !usage.configured
-        ? 'Live usage monitoring not configured'
-        : (status.planLabel || 'Live usage could not be determined'));
+  const label = isUsps ? 'USPS · FREE' : verdict === 'FREE' ? 'FREE TIER' : verdict === 'PAYMENT' ? 'PAYMENT' : 'UNKNOWN';
+  const sub = isUsps
+    ? 'Validated by USPS (primary) — free, no per-call charge'
+    : verdict === 'FREE'
+      ? 'Within the SKU’s free monthly allowance — not charged'
+      : verdict === 'PAYMENT'
+        ? 'Free monthly allowance exhausted — usage is billed'
+        : (usage && !usage.configured
+          ? 'Live usage monitoring not configured'
+          : (status.planLabel || 'Live usage could not be determined'));
 
   const sku = usage?.sku || null;
   const priceStr = sku ? priceFmt(sku.unitPrice, sku.currency, sku.usageUnit) : null;
@@ -413,7 +441,10 @@ function ApiStatusModal({ status, onClose }) {
 
         {/* Base facts from the live validate call. */}
         <dl className="api-facts">
+          <div><dt>Provider</dt><dd>{status.provider || 'Address Validation'}{isUsps ? ' · primary' : status.role === 'backup' ? ' · backup' : ''}</dd></div>
           <div><dt>Mode</dt><dd>{live ? 'Live · real-time' : 'Offline'}</dd></div>
+          {status.dpv && <div><dt>USPS DPV</dt><dd className="mono">{status.dpv}</dd></div>}
+          {status.zipPlus4 != null && <div><dt>ZIP+4</dt><dd>{status.zipPlus4 ? 'Appended' : 'Not available'}</dd></div>}
           {status.billingEnabled != null && <div><dt>Billing account</dt><dd>{status.billingEnabled ? 'Enabled' : 'Not enabled'}</dd></div>}
           {status.responseId && <div><dt>Response ID</dt><dd className="mono">{status.responseId}</dd></div>}
           {whenStr && <div><dt>Checked</dt><dd>{whenStr}</dd></div>}
@@ -641,15 +672,17 @@ export default function StatementHome() {
     if (!key) return;
     setValidating(key);
     try {
-      const { validated, api } = await statementsApi.validateAddress(key);
-      // Surface the live API plan status as a real-time popup. The validate call proves
-      // billing is enabled; enrich it with the live SKU + month-to-date usage (Cloud
-      // Monitoring / Billing Catalog) so the free-tier verdict reflects real usage.
+      const { validated, api, provider } = await statementsApi.validateAddress(key);
+      // Surface the live API provider status as a real-time popup. Enrich with the live
+      // provider/usage status (USPS health, or Google SKU + month-to-date usage) so the
+      // popup reflects real state, not a cached guess.
       const usage = await statementsApi.addressValidationStatus().then((d) => d.api).catch(() => null);
       if (api || usage) setApiStatus({ ...(api || {}), usage });
       if (usage) setTierStatus(usage); // keep the table's Tier column current
+      // Label the real provider that served this validation, in real time.
+      const via = provider ? ` via ${providerShort(provider)}` : '';
       push(
-        `Address ${validated.complete ? 'confirmed' : 'updated'}: ${validated.formatted}`,
+        `Address ${validated.complete ? 'confirmed' : 'updated'}${via}: ${validated.formatted}`,
         validated.complete ? 'success' : 'info'
       );
       await refresh();

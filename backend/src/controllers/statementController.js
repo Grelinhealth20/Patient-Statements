@@ -1,7 +1,8 @@
 import { getPool } from '../config/db.js';
 import { env } from '../config/env.js';
 import { writeAudit } from '../config/initDb.js';
-import { validateAddress, extractValidatedAddress, buildApiStatus } from '../utils/addressValidation.js';
+import { buildApiStatus } from '../utils/addressValidation.js';
+import { resolvePatientAddress, isAnyUspsConfigured, probeUsps } from '../utils/addressResolver.js';
 import { getAddressValidationUsage } from '../utils/billingUsage.js';
 import { recordApiCall, getMonthlyCallCount } from '../utils/apiUsage.js';
 import {
@@ -310,6 +311,9 @@ export async function listPatients(req, res, next) {
         officeAddress: officeAddressOf(data),
         patientAddress: patientAddressOf(data),
         addressValidated: !!(data && data.addressValidated),
+        addressValidationProvider: (data && data.addressValidationProvider) || null, // 'usps' | 'google'
+        addressValidatedAt: (data && data.addressValidated) || null,
+        addressValidationVerdict: (data && data.addressValidationVerdict) || null,
         dosCount: Number(r.dosCount || 0),
         pendingCount: pending,
         generatedCount: Number(r.generatedCount || 0),
@@ -439,15 +443,12 @@ export async function validatePatientAddress(req, res, next) {
       return res.status(400).json({ message: 'This patient has no address on file to validate.' });
     }
 
-    // Call Google Address Validation (server-side, bounded by a timeout).
-    const payload = await validateAddress(inputLines);
-    // Reaching here means Google returned 200 → a billable call. Count it toward the
-    // month's usage (accurate free-tier tracking without Cloud Monitoring). Non-fatal.
-    await recordApiCall('address_validation');
-    // A successful Maps Platform call means the project's billing account is active
-    // (unbilled keys are rejected). Derive the accurate real-time plan status.
-    const apiStatus = buildApiStatus('ok', payload?.responseId);
-    const validated = extractValidatedAddress(payload);
+    // Validate the address in real time: USPS is the PRIMARY source of truth; Google
+    // is used only as a backup when USPS cannot identify it accurately.
+    const { validated, provider, apiStatus, billable } = await resolvePatientAddress({ line1, line2 });
+    // Count usage per provider. Only the Google backup is billable, so only that
+    // counter feeds the free-tier verdict; USPS calls are tracked separately (free).
+    await recordApiCall(billable ? 'address_validation' : 'usps_validation');
     if (!validated.line1 && !validated.line2) {
       return res.status(422).json({ message: 'The address could not be validated.' });
     }
@@ -464,9 +465,19 @@ export async function validatePatientAddress(req, res, next) {
             SET data = JSON_SET(data,
                   '$.patientAddress1', :l1,
                   '$.patientAddress2', :l2,
-                  '$.addressValidated', :validatedAt)
+                  '$.addressValidated', :validatedAt,
+                  '$.addressValidationProvider', :provider,
+                  '$.addressValidationVerdict', :verdictText)
           WHERE user_id = :userId AND patient_key = :key`,
-        { l1: validated.line1, l2: validated.line2, validatedAt: new Date().toISOString(), userId, key }
+        {
+          l1: validated.line1,
+          l2: validated.line2,
+          validatedAt: new Date().toISOString(),
+          provider,                          // 'usps' (primary) or 'google' (backup)
+          verdictText: validated.verdictText || '',
+          userId,
+          key,
+        }
       );
       updatedRows = result.affectedRows || 0;
       await conn.commit();
@@ -480,7 +491,7 @@ export async function validatePatientAddress(req, res, next) {
     await writeAudit({
       actorId: userId,
       action: 'statements.validateAddress',
-      detail: `patient=${key} rows=${updatedRows} before="${inputLines.join(', ')}" after="${validated.formatted}"`,
+      detail: `patient=${key} provider=${provider} rows=${updatedRows} before="${inputLines.join(', ')}" after="${validated.formatted}"`,
     });
 
     return res.json({
@@ -494,6 +505,7 @@ export async function validatePatientAddress(req, res, next) {
         hasInferred: validated.hasInferred,
         verdictText: validated.verdictText,
       },
+      provider,             // 'usps' (primary) or 'google' (backup)
       updatedRows,
       api: apiStatus,
     });
@@ -510,22 +522,69 @@ export async function validatePatientAddress(req, res, next) {
   }
 }
 
-/* --------------------------------- GET /address-validation/status (live SKU) */
+/* ------------------------------ GET /address-validation/status (live provider) */
 
 /**
- * Live free-tier / SKU status for the Google Address Validation API. Reads the REAL
- * month-to-date call volume (Cloud Monitoring) and the SKU's free threshold + price
- * (Cloud Billing Catalog) and returns an accurate verdict (FREE / PAYMENT / UNKNOWN).
- * Never fabricates: figures it cannot source are returned as null. When live
- * monitoring is not configured the response says so honestly (configured:false).
+ * Live address-validation provider status for the client pill/popup.
+ *
+ * PRIMARY provider is USPS Web Tools (free, real-time) when configured — its verdict
+ * is FREE (USPS Web Tools address validation carries no per-call charge). The Google
+ * Address Validation billing/free-tier detail (real Cloud Monitoring volume + Cloud
+ * Billing Catalog SKU) is reported as the BACKUP, since Google now only runs when
+ * USPS cannot identify an address. Nothing is fabricated: figures that cannot be
+ * sourced are null and the verdict degrades to UNKNOWN honestly.
  */
 export async function addressValidationStatus(req, res, next) {
   try {
-    // Feed the app's own month-to-date call count as the usage source when Cloud
-    // Monitoring isn't configured, so the free-tier verdict is accurate today.
-    const appCalls = await getMonthlyCallCount('address_validation').catch(() => null);
-    const status = await getAddressValidationUsage({ appCalls });
-    return res.json({ api: status });
+    // Google backup usage (real): app counter feeds the free-tier verdict when Cloud
+    // Monitoring isn't configured. Also surface this app's USPS call count (free).
+    const [googleCalls, uspsCalls] = await Promise.all([
+      getMonthlyCallCount('address_validation').catch(() => null),
+      getMonthlyCallCount('usps_validation').catch(() => null),
+    ]);
+    const backup = await getAddressValidationUsage({ appCalls: googleCalls });
+    backup.role = 'backup';
+
+    // Truthful provider status: probe USPS health so the pill reflects what is ACTUALLY
+    // serving, not merely whether credentials are set.
+    const health = isAnyUspsConfigured()
+      ? await probeUsps().catch((e) => ({ configured: true, healthy: false, reason: e.message }))
+      : { configured: false, healthy: false };
+
+    let api;
+    if (health.healthy) {
+      // USPS is live → it is the primary, free validator.
+      api = {
+        provider: health.path === 'v3' ? 'USPS Addresses API v3' : 'USPS Web Tools (Address Validation)',
+        primary: 'usps',
+        uspsPath: health.path,
+        uspsHealthy: true,
+        live: true,
+        verdict: 'FREE', // USPS Web Tools address validation is free of charge
+        planLabel: 'USPS Web Tools — free (no per-call charge)',
+        uspsCallsThisMonth: uspsCalls,
+        note: 'USPS is the primary validator (free, real-time). Google Address Validation runs only as a backup when USPS cannot identify an address; its live billing/free-tier detail is shown below.',
+        checkedAt: health.checkedAt || new Date().toISOString(),
+        backup,
+      };
+    } else {
+      // USPS not configured OR configured-but-failing → Google is really doing the work.
+      // Report Google's live billing/free-tier status as the active provider, honestly.
+      api = {
+        ...backup,
+        role: 'active',
+        primary: 'google',
+        uspsConfigured: !!health.configured,
+        uspsHealthy: false,
+        uspsReason: health.reason || null,
+        uspsCallsThisMonth: uspsCalls,
+        note: health.configured
+          ? `USPS is configured but not serving right now (${health.reason || 'unavailable'}), so Google Address Validation is the active validator. ` + (backup.reason || '')
+          : 'USPS is not configured, so Google Address Validation is the active validator. ' + (backup.reason || ''),
+      };
+    }
+
+    return res.json({ api });
   } catch (err) {
     next(err);
   }

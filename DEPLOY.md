@@ -73,7 +73,10 @@ Set these in **Settings → Environment Variables** for **Production** and
 | `SUPER_ADMIN_EMAIL` | `admin@grelinhealth.com` |
 | `SUPER_ADMIN_PASSWORD` | `<your-admin-password>` |
 | `SUPER_ADMIN_NAME` | `Super Administrator` |
-| `GOOGLE_ADDRESS_VALIDATION_API_KEY` | `<your-google-api-key>` |
+| `USPS_CLIENT_ID` | `<usps-consumer-key>` *(PRIMARY validator — USPS APIs v3 OAuth)* |
+| `USPS_CLIENT_SECRET` | `<usps-consumer-secret>` *(PRIMARY validator — USPS APIs v3 OAuth)* |
+| `USPS_USERID` | `grelinhealthinc` *(legacy Web Tools fallback; retired for this account)* |
+| `GOOGLE_ADDRESS_VALIDATION_API_KEY` | `<your-google-api-key>` *(BACKUP validator)* |
 | `GOOGLE_ADDRESS_VALIDATION_REGION` | `US` |
 | `GCP_PROJECT_ID` | `<gcp-project-that-owns-the-key>` *(optional; enables project-wide usage)* |
 | `GCP_SERVICE_ACCOUNT_JSON` | `<service-account-key-as-one-line-json>` *(optional; see below)* |
@@ -91,6 +94,21 @@ Set these in **Settings → Environment Variables** for **Production** and
 > `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` unset and the AWS default
 > credential provider chain is used. If the bucket is not configured, generation
 > still works and PDFs download locally (archival is simply skipped).
+
+> **Address validation providers.** USPS Web Tools is the **primary** validator
+> (free, real-time; authenticates with `USPS_USERID` only — no password). Google
+> Address Validation is the **backup**, used only when USPS cannot identify an
+> address accurately. The corrected address is written to the DB identically
+> regardless of which provider served it, and the audit log records the provider.
+>
+> **USPS APIs v3 (OAuth2).** The primary validator uses the current USPS platform
+> (`apis.usps.com`): the app mints an OAuth2 access token from `USPS_CLIENT_ID` +
+> `USPS_CLIENT_SECRET` (Consumer Key/Secret from developer.usps.com, scope
+> `addresses`) and calls `GET /addresses/v3/address`. Verified live: an exact match
+> returns the standardized line + ZIP+4 + DPV. The legacy Web Tools `USPS_USERID`
+> path is retired for this account and only used if the v3 keys are unset; either way
+> Google is the final backup. The app probes USPS health live, so the pill/labels
+> always reflect the provider actually serving.
 
 > **Address Validation billing tier (live).** The "Free Tier / Paid" pill and the
 > API-status popup are driven by REAL data, never fabricated. SKU name, free

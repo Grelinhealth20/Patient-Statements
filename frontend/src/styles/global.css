@@ -375,6 +375,9 @@ input, button, select, textarea { font-family: inherit; }
   color: var(--green); background: var(--green-soft); border: 1px solid #b7e3cb; white-space: nowrap;
 }
 .addr-verified svg { width: 13px; height: 13px; }
+/* Provider-specific accents so the label reads at a glance: USPS (primary) vs Google (backup). */
+.addr-verified.prov-usps { color: #0b4da2; background: #e8f1fc; border-color: #b9d6f5; }
+.addr-verified.prov-google { color: #8a5a00; background: #fdf3e3; border-color: #f0d9ac; }
 .table-empty { text-align: center; color: var(--text-mute); padding: 30px; font-weight: 600; font-size: 12px; }
 
 /* Pagination bar: "Showing X–Y of Z" + numbered page controls (10 patients/page) */

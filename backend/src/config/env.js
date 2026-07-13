@@ -40,8 +40,27 @@ export const env = {
     name: process.env.SUPER_ADMIN_NAME || 'Super Administrator',
   },
 
+  // USPS — PRIMARY address validator (source of truth for US mail). Server-side only.
+  // Two supported auth paths, preferred in this order:
+  //   1) USPS APIs v3 (apis.usps.com) — OAuth2 client_credentials with a Consumer Key
+  //      (clientId) + Consumer Secret (clientSecret), scope "addresses". This is the
+  //      current USPS platform (the legacy Web Tools address APIs were retired).
+  //   2) Legacy Web Tools (secure.shippingapis.com) — USERID only. Kept as a fallback
+  //      for accounts still provisioned on Web Tools.
+  // When neither is usable, address validation falls back to Google (the backup).
+  usps: {
+    // USPS APIs v3 (OAuth2)
+    clientId: process.env.USPS_CLIENT_ID || '',
+    clientSecret: process.env.USPS_CLIENT_SECRET || '',
+    apiBase: process.env.USPS_API_BASE || 'https://apis.usps.com',
+    // Legacy Web Tools (USERID)
+    userId: process.env.USPS_USERID || '',
+    endpoint: process.env.USPS_ENDPOINT || 'https://secure.shippingapis.com/ShippingAPI.dll',
+  },
+
   google: {
     // Google Address Validation API key — server-side only, never sent to the client.
+    // BACKUP provider: used only when USPS cannot identify an address accurately.
     addressValidationKey: process.env.GOOGLE_ADDRESS_VALIDATION_API_KEY || '',
     addressRegion: process.env.GOOGLE_ADDRESS_VALIDATION_REGION || 'US',
 
