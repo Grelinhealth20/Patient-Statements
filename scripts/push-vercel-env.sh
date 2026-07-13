@@ -26,6 +26,9 @@ while IFS= read -r line; do
   value="${line#*=}"
   key="$(echo "$key" | xargs)"
 
+  # Skip keys with an empty value (e.g. an unset CLIENT_ORIGIN) — Vercel rejects blanks.
+  [[ -z "$value" ]] && { echo "  skip $key (empty)"; continue; }
+
   for target in "${TARGETS[@]}"; do
     # remove any existing value first so this script is re-runnable
     vercel env rm "$key" "$target" -y >/dev/null 2>&1 || true
