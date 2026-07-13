@@ -16,6 +16,17 @@ import {
 const s = (v) => (v == null ? '' : String(v)).trim();
 const norm = (v) => s(v).toLowerCase().replace(/\s+/g, ' ');
 
+/**
+ * Row-visibility scope. A **super administrator sees and acts across ALL users'
+ * statements** (organization-wide oversight); every other user is restricted to their
+ * own rows exactly as before. Returns a SQL boolean fragment to drop into a WHERE
+ * clause: `1=1` for admins (no restriction) or `<col> = :userId` for regular users.
+ * The `:userId` param can always be supplied — it's simply ignored when unrestricted.
+ */
+function uidClause(req, col = 'user_id') {
+  return req.user.role === 'super_admin' ? '1=1' : `${col} = :userId`;
+}
+
 // Guardrails for a single import request (keeps memory + payload bounded).
 const MAX_IMPORT_ROWS = 25000;
 const INSERT_CHUNK = 1000;
@@ -222,7 +233,7 @@ export async function listPatients(req, res, next) {
                 COUNT(*) AS dosCount,
                 SUM(d.status = 'pending') AS pendingCount
          FROM statement_dos d
-         WHERE d.user_id = :userId
+         WHERE ${uidClause(req, 'd.user_id')}
          GROUP BY d.patient_key
        ) g`,
       { userId }
@@ -251,7 +262,7 @@ export async function listPatients(req, res, next) {
          SUM(d.status = 'pending')                       AS pendingCount,
          SUM(d.status = 'generated')                     AS generatedCount
        FROM statement_dos d
-       WHERE d.user_id = :userId
+       WHERE ${uidClause(req, 'd.user_id')}
        GROUP BY d.patient_key
        ORDER BY MAX(d.patient_name)
        LIMIT ${pageSize} OFFSET ${offset}`,
@@ -275,9 +286,9 @@ export async function listPatients(req, res, next) {
        FROM statements s1
        JOIN (
          SELECT patient_key, MAX(id) AS maxId
-         FROM statements WHERE user_id = :userId AND patient_key IN (${inList}) GROUP BY patient_key
+         FROM statements WHERE ${uidClause(req)} AND patient_key IN (${inList}) GROUP BY patient_key
        ) last ON last.maxId = s1.id
-       WHERE s1.user_id = :userId`,
+       WHERE ${uidClause(req, 's1.user_id')}`,
       { userId, ...keyParams }
     );
     const latest = new Map(stmts.map((r) => [r.patientKey, r]));
@@ -289,9 +300,9 @@ export async function listPatients(req, res, next) {
        FROM statement_dos d
        JOIN (
          SELECT patient_key, MIN(id) AS minId
-         FROM statement_dos WHERE user_id = :userId AND patient_key IN (${inList}) GROUP BY patient_key
+         FROM statement_dos WHERE ${uidClause(req)} AND patient_key IN (${inList}) GROUP BY patient_key
        ) f ON f.minId = d.id
-       WHERE d.user_id = :userId`,
+       WHERE ${uidClause(req, 'd.user_id')}`,
       { userId, ...keyParams }
     );
     const sample = new Map(
@@ -349,7 +360,7 @@ export async function listPendingPatients(req, res, next) {
               SUM(d.status = 'pending')      AS pendingCount,
               SUM(d.status = 'generated')    AS generatedCount
        FROM statement_dos d
-       WHERE d.user_id = :userId
+       WHERE ${uidClause(req, 'd.user_id')}
        GROUP BY d.patient_key
        HAVING pendingCount > 0
        ORDER BY MAX(d.patient_name)`,
@@ -402,7 +413,7 @@ export async function financialSummary(req, res, next) {
            JSON_UNQUOTE(JSON_EXTRACT(data, '$.patientResponsibility')) REGEXP '[0-9]'
          ), 0) AS dosWithAmount
        FROM statement_dos
-       WHERE user_id = :userId`,
+       WHERE ${uidClause(req)}`,
       { userId }
     );
     return res.json({
@@ -429,7 +440,7 @@ export async function listPatientDos(req, res, next) {
       `SELECT id, dos_date AS dosDate, status, statement_id AS statementId,
               data, source_file AS sourceFile, created_at AS createdAt
        FROM statement_dos
-       WHERE user_id = :userId AND patient_key = :key
+       WHERE ${uidClause(req)} AND patient_key = :key
        ORDER BY dos_date, id`,
       { userId, key }
     );
@@ -468,7 +479,7 @@ export async function validatePatientAddress(req, res, next) {
     // Representative row → the patient's current address (and confirms they exist).
     const [rows] = await pool.query(
       `SELECT data FROM statement_dos
-       WHERE user_id = :userId AND patient_key = :key
+       WHERE ${uidClause(req)} AND patient_key = :key
        ORDER BY id LIMIT 1`,
       { userId, key }
     );
@@ -513,7 +524,7 @@ export async function validatePatientAddress(req, res, next) {
                   '$.addressValidated', :validatedAt,
                   '$.addressValidationProvider', :provider,
                   '$.addressValidationVerdict', :verdictText)
-          WHERE user_id = :userId AND patient_key = :key`,
+          WHERE ${uidClause(req)} AND patient_key = :key`,
         {
           l1: validated.line1,
           l2: validated.line2,
@@ -616,7 +627,7 @@ export async function updatePatientAddress(req, res, next) {
 
     const pool = getPool();
     const [[exists]] = await pool.query(
-      `SELECT 1 AS ok FROM statement_dos WHERE user_id = :userId AND patient_key = :key LIMIT 1`,
+      `SELECT 1 AS ok FROM statement_dos WHERE ${uidClause(req)} AND patient_key = :key LIMIT 1`,
       { userId, key }
     );
     if (!exists) return res.status(404).json({ message: 'Patient not found.' });
@@ -655,7 +666,7 @@ export async function updatePatientAddress(req, res, next) {
                   '$.addressValidated', :validatedAt,
                   '$.addressValidationProvider', :provider,
                   '$.addressValidationVerdict', :verdictText)
-          WHERE user_id = :userId AND patient_key = :key`,
+          WHERE ${uidClause(req)} AND patient_key = :key`,
         {
           l1: saved.line1,
           l2: saved.line2,
@@ -761,9 +772,9 @@ export async function generateStatement(req, res, next) {
 
     // Lock the pending DOS for this patient so concurrent generates can't double-issue.
     const [pending] = await conn.query(
-      `SELECT id, data, dos_date, account_number, patient_name
+      `SELECT id, data, dos_date, account_number, patient_name, user_id
        FROM statement_dos
-       WHERE user_id = :userId AND patient_key = :key AND status = 'pending'
+       WHERE ${uidClause(req)} AND patient_key = :key AND status = 'pending'
        ORDER BY dos_date, id
        FOR UPDATE`,
       { userId, key }
@@ -771,7 +782,7 @@ export async function generateStatement(req, res, next) {
 
     if (!pending.length) {
       const [[{ total }]] = await conn.query(
-        `SELECT COUNT(*) AS total FROM statement_dos WHERE user_id = :userId AND patient_key = :key`,
+        `SELECT COUNT(*) AS total FROM statement_dos WHERE ${uidClause(req)} AND patient_key = :key`,
         { userId, key }
       );
       await conn.rollback();
@@ -787,12 +798,16 @@ export async function generateStatement(req, res, next) {
     const sample = pending[0];
     const patientName = sample.patient_name || '';
     const accountNumber = sample.account_number || '';
+    // The statement is attributed to the patient's OWNER (the user who imported the
+    // DOS), not necessarily the caller — so a super admin generating on behalf of a
+    // user keeps ownership/visibility consistent for everyone.
+    const ownerId = sample.user_id;
     const sampleData = typeof sample.data === 'string' ? JSON.parse(sample.data) : sample.data;
     const officeName = s(sampleData?.officeName);
 
     // Sequence number = how many statements this patient already has + 1.
     const [[{ cnt }]] = await conn.query(
-      `SELECT COUNT(*) AS cnt FROM statements WHERE user_id = :userId AND patient_key = :key`,
+      `SELECT COUNT(*) AS cnt FROM statements WHERE ${uidClause(req)} AND patient_key = :key`,
       { userId, key }
     );
     const seq = Number(cnt || 0) + 1;
@@ -817,8 +832,8 @@ export async function generateStatement(req, res, next) {
 
     const [ins] = await conn.query(
       `INSERT INTO statements (user_id, account_number, patient_name, patient_key, file_name, dos_count)
-       VALUES (:userId, :acct, :name, :key, :file, :count)`,
-      { userId, acct: accountNumber, name: patientName, key, file: fileName, count: pending.length }
+       VALUES (:ownerId, :acct, :name, :key, :file, :count)`,
+      { ownerId, acct: accountNumber, name: patientName, key, file: fileName, count: pending.length }
     );
     const statementId = ins.insertId;
 
@@ -894,23 +909,24 @@ export async function storeStatementPdf(req, res, next) {
     }
 
     const pool = getPool();
-    // The statement must exist AND belong to the calling user.
+    // The statement must exist AND be visible to the caller (own row, or any row for a
+    // super admin). The S3 key is namespaced under the statement's OWNER for consistency.
     const [[stmt]] = await pool.query(
-      `SELECT id, file_name AS fileName, patient_name AS patientName, account_number AS accountNumber
-         FROM statements WHERE id = :id AND user_id = :userId LIMIT 1`,
+      `SELECT id, user_id AS ownerId, file_name AS fileName, patient_name AS patientName, account_number AS accountNumber
+         FROM statements WHERE id = :id AND ${uidClause(req)} LIMIT 1`,
       { id: statementId, userId }
     );
     if (!stmt) {
       return res.status(404).json({ message: 'Statement not found.' });
     }
 
-    const key = buildStatementKey({ userId, statementId, fileName: stmt.fileName });
+    const key = buildStatementKey({ userId: stmt.ownerId, statementId, fileName: stmt.fileName });
     await putStatementPdf({
       key,
       body,
       contentType: 'application/pdf',
       metadata: {
-        'user-id': String(userId),
+        'user-id': String(stmt.ownerId),
         'statement-id': String(statementId),
         'account-number': s(stmt.accountNumber),
       },
@@ -920,7 +936,7 @@ export async function storeStatementPdf(req, res, next) {
       `UPDATE statements
           SET s3_bucket = :bucket, s3_key = :key, file_size = :size,
               content_type = 'application/pdf', stored_at = NOW()
-        WHERE id = :id AND user_id = :userId`,
+        WHERE id = :id AND ${uidClause(req)}`,
       { bucket: env.s3.bucket, key, size: body.length, id: statementId, userId }
     );
 
@@ -958,7 +974,7 @@ export async function downloadStatement(req, res, next) {
     const pool = getPool();
     const [[stmt]] = await pool.query(
       `SELECT file_name AS fileName, s3_key AS s3Key
-         FROM statements WHERE id = :id AND user_id = :userId LIMIT 1`,
+         FROM statements WHERE id = :id AND ${uidClause(req)} LIMIT 1`,
       { id: statementId, userId }
     );
     if (!stmt) {
