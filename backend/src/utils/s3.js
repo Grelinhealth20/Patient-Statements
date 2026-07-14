@@ -136,6 +136,38 @@ export async function getPresignedDownloadUrl({ key, fileName, expiresIn }) {
 }
 
 /**
+ * Read a (small) text object from S3 as a UTF-8 string. Used by the desktop
+ * auto-update feed to serve latest.yml straight from the private bucket without
+ * ever making the object public.
+ */
+export async function getObjectText(key) {
+  const s3 = getClient();
+  try {
+    const out = await s3.send(new GetObjectCommand({ Bucket: env.s3.bucket, Key: key }));
+    return await out.Body.transformToString('utf-8');
+  } catch (err) {
+    if (err?.$metadata?.httpStatusCode === 404 || err?.name === 'NoSuchKey') {
+      throw new S3StorageError(`Object not found: ${key}`, 404);
+    }
+    throw new S3StorageError(`Could not read ${key}: ${err.message}`, 502);
+  }
+}
+
+/**
+ * Short-lived presigned GET URL for an arbitrary object. The desktop updater is
+ * redirected here to download the (large) installer directly from S3, so the bytes
+ * never flow through the API and the bucket stays fully private.
+ */
+export async function getPresignedObjectUrl({ key, expiresIn = 600 }) {
+  const s3 = getClient();
+  try {
+    return await getSignedUrl(s3, new GetObjectCommand({ Bucket: env.s3.bucket, Key: key }), { expiresIn });
+  } catch (err) {
+    throw new S3StorageError(`Could not create a link for ${key}: ${err.message}`, 502);
+  }
+}
+
+/**
  * Permanently delete EVERY stored statement object under the app's key prefix.
  * Scoped to `<keyPrefix>/` so it can never touch unrelated objects in a shared
  * bucket. Lists and deletes in pages of up to 1000 (the S3 batch limit) until the

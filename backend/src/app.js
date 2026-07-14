@@ -8,6 +8,7 @@ import { ensureReady } from './ready.js';
 import authRoutes from './routes/authRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
 import statementRoutes from './routes/statementRoutes.js';
+import updateRoutes from './routes/updateRoutes.js';
 
 export function createApp() {
   const app = express();
@@ -27,6 +28,10 @@ export function createApp() {
   if (env.nodeEnv !== 'test') {
     app.use(morgan(env.nodeEnv === 'production' ? 'combined' : 'dev'));
   }
+
+  // Desktop auto-update feed — public and DB-independent, so it is mounted BEFORE
+  // the DB-ready gate below (update checks must work even if the DB is briefly down).
+  app.use('/api/updates', updateRoutes);
 
   // Ensure the DB pool + schema are ready before handling any API request.
   // Cached after the first call, so this is effectively free on warm instances
