@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
+import { GrelinWordmark } from '../components/GrelinLogo.jsx';
 
 export default function Login() {
   const { login } = useAuth();
@@ -27,58 +28,52 @@ export default function Login() {
 
   return (
     <div className="auth-page">
-      <form className="auth-card" onSubmit={submit}>
-        <div className="auth-brand">
-          <div className="auth-brand-mark">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9"
-              strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" />
-            </svg>
-          </div>
-          <div className="auth-brand-text">
-            <strong>Grelin Health</strong>
-            <span>Statement Suite</span>
-          </div>
+      <form className="auth-card auth-card--center" onSubmit={submit}>
+        <div className="auth-logo">
+          <GrelinWordmark className="auth-wordmark" />
         </div>
+        <div className="auth-eyebrow"><span>Statement Suite</span></div>
 
         <h2>Welcome back</h2>
         <p className="auth-sub">Sign in to access your workspace</p>
 
         {error && <div className="alert alert-error" role="alert">{error}</div>}
 
-        <label className="field">
-          <span className="field-label">Username or Email</span>
-          <input
-            type="text"
-            autoComplete="username"
-            value={identifier}
-            onChange={(e) => setIdentifier(e.target.value)}
-            placeholder="e.g. superadmin"
-            required
-            autoFocus
-          />
-        </label>
-
-        <label className="field">
-          <span className="field-label">Password</span>
-          <div className="password-wrap">
+        <div className="auth-fields">
+          <label className="field">
+            <span className="field-label">Username or Email</span>
             <input
-              type={showPw ? 'text' : 'password'}
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter your password"
+              type="text"
+              autoComplete="username"
+              value={identifier}
+              onChange={(e) => setIdentifier(e.target.value)}
+              placeholder="e.g. superadmin"
               required
+              autoFocus
             />
-            <button type="button" className="pw-toggle" onClick={() => setShowPw((v) => !v)}>
-              {showPw ? 'Hide' : 'Show'}
-            </button>
-          </div>
-        </label>
+          </label>
 
-        <button className="btn-primary" type="submit" disabled={busy}>
-          {busy ? 'Signing in…' : 'Sign In Securely'}
-        </button>
+          <label className="field">
+            <span className="field-label">Password</span>
+            <div className="password-wrap">
+              <input
+                type={showPw ? 'text' : 'password'}
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter your password"
+                required
+              />
+              <button type="button" className="pw-toggle" onClick={() => setShowPw((v) => !v)}>
+                {showPw ? 'Hide' : 'Show'}
+              </button>
+            </div>
+          </label>
+
+          <button className="btn-primary" type="submit" disabled={busy}>
+            {busy ? 'Signing in…' : 'Sign In Securely'}
+          </button>
+        </div>
 
         <p className="auth-foot">Protected system · Access is monitored and audited</p>
       </form>

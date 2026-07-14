@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
+import { GrelinMark } from './GrelinLogo.jsx';
 
 function Icon({ name }) {
   const paths = {
@@ -59,7 +60,7 @@ export default function AppLayout() {
       <header className="app-topbar">
         <div className="topbar-left">
           <div className="brand">
-            <div className="brand-mark"><Icon name="spark" /></div>
+            <div className="brand-mark"><GrelinMark className="brand-logo" /></div>
             <div className="brand-text">
               <strong>Grelin Health</strong>
               <span>Statement Suite</span>

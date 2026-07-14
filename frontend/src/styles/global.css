@@ -141,6 +141,21 @@ input, button, select, textarea { font-family: inherit; }
 .auth-sub { margin: 5px 0 22px; color: var(--text-soft); font-weight: 600; font-size: 12.5px; }
 .auth-foot { margin: 18px 0 0; text-align: center; font-size: 10.5px; color: var(--text-faint); font-weight: 600; font-family: var(--mono); letter-spacing: 0.3px; }
 
+/* ---- Redesigned, centered login (logo-forward) ---- */
+.auth-card--center { text-align: center; }
+.auth-logo { display: flex; justify-content: center; margin: 2px 0 16px; }
+.auth-wordmark { height: 34px; width: auto; }
+.auth-eyebrow { display: flex; align-items: center; gap: 12px; margin: 0 0 22px; }
+.auth-eyebrow::before, .auth-eyebrow::after { content: ''; flex: 1; height: 1px; background: var(--border-2); }
+.auth-eyebrow span {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 1.6px;
+  text-transform: uppercase; color: var(--text-mute); white-space: nowrap;
+}
+.auth-card--center h2 { font-size: 23px; letter-spacing: -0.4px; }
+.auth-card--center .auth-sub { text-align: center; margin: 6px 0 24px; font-size: 13.5px; }
+.auth-fields { text-align: left; }
+.auth-card--center .btn-primary { margin-top: 6px; }
+
 /* =========================================================================
    Fields
    ========================================================================= */
@@ -233,11 +248,11 @@ input, button, select, textarea { font-family: inherit; }
 
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand-mark {
-  width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; color: #fff;
-  background: linear-gradient(135deg, var(--primary), var(--cyan));
-  box-shadow: 0 6px 14px rgba(53, 87, 201, 0.32); flex: none;
+  width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center;
+  background: #fff; border: 1px solid var(--border-2); box-shadow: var(--sh-xs); flex: none;
 }
 .brand-mark svg { width: 18px; height: 18px; }
+.brand-mark .brand-logo { width: 25px; height: 23px; }
 .brand-text { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
 .brand-text strong { font-size: 15px; font-weight: 700; letter-spacing: -0.2px; }
 .brand-text span { font-family: var(--mono); font-size: 10px; color: var(--text-mute); font-weight: 600; letter-spacing: 0.6px; text-transform: uppercase; }
