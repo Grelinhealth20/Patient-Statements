@@ -942,8 +942,9 @@ export default function StatementHome() {
         />
       )}
 
-      {/* Command row: upload | summary cards | Send to Engine — one straight line */}
-      <div className="command-row">
+      {/* Command row: upload | summary cards | Send to Engine — one straight line,
+          broken out full-width to align with the patient table below. */}
+      <div className="command-row panel-breakout">
         {/* Left — futuristic drag & drop upload */}
         <div
           className={`dz-futuristic ${dragging ? 'drag' : ''} ${parsing ? 'processing' : ''}`}
@@ -967,38 +968,36 @@ export default function StatementHome() {
           <span className="dz-formats">CSV · XLSX · XLS</span>
         </div>
 
-        {/* Middle — live summary cards, aligned in a single line */}
-        <section className="panel summary-panel">
-          <div className="summary-strip">
-            <div className="summary-tile">
-              <span className="summary-ic s-blue"><IconUsers /></span>
-              <span className="summary-label">Patients</span>
-              <span className="summary-value">{totals.patients}</span>
-            </div>
-            <div className="summary-tile">
-              <span className="summary-ic s-violet"><IconLayers /></span>
-              <span className="summary-label">Dates of Service</span>
-              <span className="summary-value">{totals.dos}</span>
-            </div>
-            <div className="summary-tile">
-              <span className="summary-ic s-amber"><IconClock /></span>
-              <span className="summary-label">Pending</span>
-              <span className="summary-value">{totals.pending}</span>
-            </div>
-            <div className="summary-tile">
-              <span className="summary-ic s-green"><IconCheck /></span>
-              <span className="summary-label">Generated</span>
-              <span className="summary-value">{totals.generated}</span>
-            </div>
-            <div className="summary-tile" title={summary
-              ? `Sum of Patient Responsibility across ${summary.dosWithAmount} of ${summary.dosCount} dates of service (live from the database)`
-              : 'Calculating outstanding patient responsibility…'}>
-              <span className="summary-ic s-teal"><IconDollar /></span>
-              <span className="summary-label">Patient Resp. Outstanding</span>
-              <span className="summary-value">{summary ? money(summary.patientResponsibilityOutstanding) : '—'}</span>
-            </div>
+        {/* Middle — separate, equally-sized summary cards (icon → number → label) */}
+        <div className="summary-cards">
+          <div className="summary-card">
+            <span className="summary-ic"><IconUsers /></span>
+            <span className="summary-value">{totals.patients}</span>
+            <span className="summary-label">Patients</span>
           </div>
-        </section>
+          <div className="summary-card">
+            <span className="summary-ic"><IconLayers /></span>
+            <span className="summary-value">{totals.dos}</span>
+            <span className="summary-label">Dates of Service</span>
+          </div>
+          <div className="summary-card">
+            <span className="summary-ic"><IconClock /></span>
+            <span className="summary-value">{totals.pending}</span>
+            <span className="summary-label">Pending</span>
+          </div>
+          <div className="summary-card">
+            <span className="summary-ic"><IconCheck /></span>
+            <span className="summary-value">{totals.generated}</span>
+            <span className="summary-label">Generated</span>
+          </div>
+          <div className="summary-card" title={summary
+            ? `Sum of Patient Responsibility across ${summary.dosWithAmount} of ${summary.dosCount} dates of service (live from the database)`
+            : 'Calculating outstanding patient responsibility…'}>
+            <span className="summary-ic"><IconDollar /></span>
+            <span className="summary-value">{summary ? money(summary.patientResponsibilityOutstanding) : '—'}</span>
+            <span className="summary-label">Patient Responsibility</span>
+          </div>
+        </div>
 
         {/* Right — Send to Engine control panel */}
         <section className="panel engine-panel">
