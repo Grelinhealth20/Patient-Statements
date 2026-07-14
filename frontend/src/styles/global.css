@@ -724,28 +724,51 @@ input, button, select, textarea { font-family: inherit; }
 /* ---- Command row: [ upload | summary cards | Send to Engine ] in one line ---- */
 .command-row {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) minmax(0, 1.75fr) minmax(300px, 1.05fr);
+  grid-template-columns: minmax(230px, 0.9fr) minmax(0, 2.4fr) minmax(290px, 1fr);
   gap: 14px;
   align-items: stretch;
 }
-/* Center block of live summary cards — fixed 2-up grid; the wide currency card
-   spans the full width so the row of five reads as a clean 2·2·1 stack. */
-.command-kpis {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  grid-auto-rows: 1fr;
-  gap: 12px;
-}
-.command-kpis .command-kpi-wide { grid-column: 1 / -1; }
-/* The three columns share one height; keep each panel filling it cleanly. */
+/* All three columns share one height and fill it cleanly. */
 .command-row .dz-futuristic,
+.command-row .summary-panel,
 .command-row .engine-panel { height: 100%; }
+
+/* Middle summary panel — five live stat tiles in one straight line, divided. */
+.summary-panel { display: flex; align-items: stretch; padding: 4px; }
+.summary-strip {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  width: 100%;
+}
+.summary-tile {
+  display: flex; flex-direction: column; gap: 9px; justify-content: center;
+  padding: 16px 16px;
+}
+.summary-tile + .summary-tile { border-left: 1px solid var(--border); }
+.summary-ic { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none; }
+.summary-ic svg { width: 15px; height: 15px; }
+.summary-ic.s-blue { background: var(--primary-soft); color: var(--primary-600); }
+.summary-ic.s-violet { background: #f0e9ff; color: var(--violet); }
+.summary-ic.s-amber { background: var(--amber-soft); color: var(--amber); }
+.summary-ic.s-green { background: var(--green-soft); color: var(--green); }
+.summary-ic.s-teal { background: #d8f3ee; color: #0f766e; }
+.summary-label {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.3px; text-transform: uppercase;
+  color: var(--text-mute); line-height: 1.3;
+}
+.summary-value {
+  font-family: var(--mono); font-size: 23px; font-weight: 700; color: #0a0e18;
+  letter-spacing: -0.8px; line-height: 1;
+}
+
 @media (max-width: 1180px) {
   .command-row { grid-template-columns: 1fr; }
 }
-@media (max-width: 620px) {
-  .command-kpis { grid-template-columns: 1fr; }
-  .command-kpis .command-kpi-wide { grid-column: auto; }
+@media (max-width: 680px) {
+  .summary-strip { grid-template-columns: repeat(2, 1fr); }
+  .summary-tile:nth-child(odd) { border-left: none; }
+  .summary-tile { border-top: 1px solid var(--border); }
+  .summary-tile:nth-child(-n+2) { border-top: none; }
 }
 
 /* ---- Futuristic drag & drop ---- */

@@ -942,19 +942,7 @@ export default function StatementHome() {
         />
       )}
 
-      {/* Command hero — title band */}
-      <header className="dash-hero">
-        <div className="dash-hero-head">
-          <div>
-            <p className="dash-eyebrow">Patient Statements · Control Center</p>
-            <h1 className="dash-title">Statement Command Center</h1>
-            <p className="dash-sub">Upload, validate, and generate enterprise patient statements in real time.</p>
-          </div>
-          {fileName && <span className="dash-lastfile" title={fileName}>Last import · {fileName}</span>}
-        </div>
-      </header>
-
-      {/* Command row: [ upload | summary cards | Send to Engine ] in one straight line */}
+      {/* Command row: upload | summary cards | Send to Engine — one straight line */}
       <div className="command-row">
         {/* Left — futuristic drag & drop upload */}
         <div
@@ -979,31 +967,38 @@ export default function StatementHome() {
           <span className="dz-formats">CSV · XLSX · XLS</span>
         </div>
 
-        {/* Center — live summary cards */}
-        <div className="command-kpis">
-          <div className="kpi k-blue">
-            <div className="kpi-top"><span className="kpi-label">Patients</span><span className="kpi-ic"><IconUsers /></span></div>
-            <span className="kpi-value">{totals.patients}</span>
+        {/* Middle — live summary cards, aligned in a single line */}
+        <section className="panel summary-panel">
+          <div className="summary-strip">
+            <div className="summary-tile">
+              <span className="summary-ic s-blue"><IconUsers /></span>
+              <span className="summary-label">Patients</span>
+              <span className="summary-value">{totals.patients}</span>
+            </div>
+            <div className="summary-tile">
+              <span className="summary-ic s-violet"><IconLayers /></span>
+              <span className="summary-label">Dates of Service</span>
+              <span className="summary-value">{totals.dos}</span>
+            </div>
+            <div className="summary-tile">
+              <span className="summary-ic s-amber"><IconClock /></span>
+              <span className="summary-label">Pending</span>
+              <span className="summary-value">{totals.pending}</span>
+            </div>
+            <div className="summary-tile">
+              <span className="summary-ic s-green"><IconCheck /></span>
+              <span className="summary-label">Generated</span>
+              <span className="summary-value">{totals.generated}</span>
+            </div>
+            <div className="summary-tile" title={summary
+              ? `Sum of Patient Responsibility across ${summary.dosWithAmount} of ${summary.dosCount} dates of service (live from the database)`
+              : 'Calculating outstanding patient responsibility…'}>
+              <span className="summary-ic s-teal"><IconDollar /></span>
+              <span className="summary-label">Patient Resp. Outstanding</span>
+              <span className="summary-value">{summary ? money(summary.patientResponsibilityOutstanding) : '—'}</span>
+            </div>
           </div>
-          <div className="kpi k-violet">
-            <div className="kpi-top"><span className="kpi-label">Dates of Service</span><span className="kpi-ic"><IconLayers /></span></div>
-            <span className="kpi-value">{totals.dos}</span>
-          </div>
-          <div className="kpi k-amber">
-            <div className="kpi-top"><span className="kpi-label">Pending</span><span className="kpi-ic"><IconClock /></span></div>
-            <span className="kpi-value">{totals.pending}</span>
-          </div>
-          <div className="kpi k-green">
-            <div className="kpi-top"><span className="kpi-label">Generated</span><span className="kpi-ic"><IconCheck /></span></div>
-            <span className="kpi-value">{totals.generated}</span>
-          </div>
-          <div className="kpi k-teal command-kpi-wide" title={summary
-            ? `Sum of Patient Responsibility across ${summary.dosWithAmount} of ${summary.dosCount} dates of service (live from the database)`
-            : 'Calculating outstanding patient responsibility…'}>
-            <div className="kpi-top"><span className="kpi-label">Patient Resp. Outstanding</span><span className="kpi-ic"><IconDollar /></span></div>
-            <span className="kpi-value">{summary ? money(summary.patientResponsibilityOutstanding) : '—'}</span>
-          </div>
-        </div>
+        </section>
 
         {/* Right — Send to Engine control panel */}
         <section className="panel engine-panel">
@@ -1062,6 +1057,7 @@ export default function StatementHome() {
             <span className="count-badge">{totals.patients}</span>
           </div>
           <div className="panel-head-actions">
+            {fileName && <span className="dash-lastfile" title={fileName}>Last import · {fileName}</span>}
             <button
               className="btn-verify-all"
               onClick={() => setVerifyAllOpen(true)}

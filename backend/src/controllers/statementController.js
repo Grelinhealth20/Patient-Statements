@@ -806,11 +806,16 @@ export async function addressValidationStatus(req, res, next) {
 export async function generateStatement(req, res, next) {
   const pool = getPool();
   const conn = await pool.getConnection();
+  // Release exactly once. Post-commit work below runs on the pool (not `conn`), so
+  // if it throws after the connection is released, the catch must NOT release again
+  // — a double-release corrupts the pool. This guard makes release idempotent.
+  let released = false;
+  const releaseConn = () => { if (!released) { released = true; conn.release(); } };
   try {
     const userId = req.user.id;
     const key = norm(req.body?.key);
     if (!key) {
-      conn.release();
+      releaseConn();
       return res.status(400).json({ message: 'A patient must be selected.' });
     }
 
@@ -832,7 +837,7 @@ export async function generateStatement(req, res, next) {
         { userId, key }
       );
       await conn.rollback();
-      conn.release();
+      releaseConn();
       if (!Number(total)) {
         return res.status(404).json({ message: 'Patient not found or has no dates of service.' });
       }
@@ -891,7 +896,7 @@ export async function generateStatement(req, res, next) {
     );
 
     await conn.commit();
-    conn.release();
+    releaseConn();
 
     const [[stmtRow]] = await pool.query(
       `SELECT id, file_name AS fileName, dos_count AS dosCount, generated_at AS generatedAt,
@@ -910,8 +915,11 @@ export async function generateStatement(req, res, next) {
     const rows = pending.map((r) => (typeof r.data === 'string' ? JSON.parse(r.data) : r.data));
     return res.json({ statement: { ...stmtRow, storageEnabled: isS3Configured() }, rows });
   } catch (err) {
-    try { await conn.rollback(); } catch { /* ignore */ }
-    conn.release();
+    // Only roll back + release if we haven't already committed and released.
+    if (!released) {
+      try { await conn.rollback(); } catch { /* ignore */ }
+      releaseConn();
+    }
     next(err);
   }
 }
