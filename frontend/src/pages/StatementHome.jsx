@@ -375,7 +375,7 @@ function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, d
       </tr>
       {ex?.open && (
         <tr>
-          <td colSpan={GEN_COLSPAN} style={{ background: '#F7F9FC', padding: 0 }}>
+          <td colSpan={GEN_COLSPAN} style={{ background: '#ffffff', padding: 0 }}>
             {ex.loading ? (
               <div style={{ padding: '12px 16px', color: 'var(--muted, #6E7D91)' }}>Loading dates of service…</div>
             ) : (
@@ -942,7 +942,7 @@ export default function StatementHome() {
         />
       )}
 
-      {/* Command hero + KPI row */}
+      {/* Command hero — title band */}
       <header className="dash-hero">
         <div className="dash-hero-head">
           <div>
@@ -952,34 +952,11 @@ export default function StatementHome() {
           </div>
           {fileName && <span className="dash-lastfile" title={fileName}>Last import · {fileName}</span>}
         </div>
-        <div className="kpi-grid">
-          <div className="kpi k-blue">
-            <div className="kpi-top"><span className="kpi-label">Patients</span><span className="kpi-ic"><IconUsers /></span></div>
-            <span className="kpi-value">{totals.patients}</span>
-          </div>
-          <div className="kpi k-violet">
-            <div className="kpi-top"><span className="kpi-label">Dates of Service</span><span className="kpi-ic"><IconLayers /></span></div>
-            <span className="kpi-value">{totals.dos}</span>
-          </div>
-          <div className="kpi k-amber">
-            <div className="kpi-top"><span className="kpi-label">Pending</span><span className="kpi-ic"><IconClock /></span></div>
-            <span className="kpi-value">{totals.pending}</span>
-          </div>
-          <div className="kpi k-green">
-            <div className="kpi-top"><span className="kpi-label">Generated</span><span className="kpi-ic"><IconCheck /></span></div>
-            <span className="kpi-value">{totals.generated}</span>
-          </div>
-          <div className="kpi k-teal" title={summary
-            ? `Sum of Patient Responsibility across ${summary.dosWithAmount} of ${summary.dosCount} dates of service (live from the database)`
-            : 'Calculating outstanding patient responsibility…'}>
-            <div className="kpi-top"><span className="kpi-label">Patient Resp. Outstanding</span><span className="kpi-ic"><IconDollar /></span></div>
-            <span className="kpi-value">{summary ? money(summary.patientResponsibilityOutstanding) : '—'}</span>
-          </div>
-        </div>
       </header>
 
-      {/* Control grid: futuristic upload + Send-to-Engine control panel */}
-      <div className="control-grid">
+      {/* Command row: [ upload | summary cards | Send to Engine ] in one straight line */}
+      <div className="command-row">
+        {/* Left — futuristic drag & drop upload */}
         <div
           className={`dz-futuristic ${dragging ? 'drag' : ''} ${parsing ? 'processing' : ''}`}
           onDragOver={(e) => { if (!parsing) { e.preventDefault(); setDragging(true); } }}
@@ -1002,7 +979,33 @@ export default function StatementHome() {
           <span className="dz-formats">CSV · XLSX · XLS</span>
         </div>
 
-        {/* Send to Engine — generate a statement for a selected patient */}
+        {/* Center — live summary cards */}
+        <div className="command-kpis">
+          <div className="kpi k-blue">
+            <div className="kpi-top"><span className="kpi-label">Patients</span><span className="kpi-ic"><IconUsers /></span></div>
+            <span className="kpi-value">{totals.patients}</span>
+          </div>
+          <div className="kpi k-violet">
+            <div className="kpi-top"><span className="kpi-label">Dates of Service</span><span className="kpi-ic"><IconLayers /></span></div>
+            <span className="kpi-value">{totals.dos}</span>
+          </div>
+          <div className="kpi k-amber">
+            <div className="kpi-top"><span className="kpi-label">Pending</span><span className="kpi-ic"><IconClock /></span></div>
+            <span className="kpi-value">{totals.pending}</span>
+          </div>
+          <div className="kpi k-green">
+            <div className="kpi-top"><span className="kpi-label">Generated</span><span className="kpi-ic"><IconCheck /></span></div>
+            <span className="kpi-value">{totals.generated}</span>
+          </div>
+          <div className="kpi k-teal command-kpi-wide" title={summary
+            ? `Sum of Patient Responsibility across ${summary.dosWithAmount} of ${summary.dosCount} dates of service (live from the database)`
+            : 'Calculating outstanding patient responsibility…'}>
+            <div className="kpi-top"><span className="kpi-label">Patient Resp. Outstanding</span><span className="kpi-ic"><IconDollar /></span></div>
+            <span className="kpi-value">{summary ? money(summary.patientResponsibilityOutstanding) : '—'}</span>
+          </div>
+        </div>
+
+        {/* Right — Send to Engine control panel */}
         <section className="panel engine-panel">
           <div className="panel-head">
             <div className="panel-title-wrap">
