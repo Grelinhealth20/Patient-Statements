@@ -374,6 +374,17 @@ input, button, select, textarea { font-family: inherit; }
 .search-box input { padding: 8px 12px 8px 32px; }
 .search-box svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 14px; height: 14px; color: var(--text-faint); }
 
+/* Patient-name search box in the Patient Statements header. */
+.statements-search { width: 320px; flex: none; }
+.statements-search input { padding-right: 32px; }
+.statements-search input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }
+.search-clear {
+  position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
+  border: none; background: transparent; color: var(--text-faint); font-size: 13px; line-height: 1;
+  cursor: pointer; padding: 4px 6px; border-radius: 6px;
+}
+.search-clear:hover { background: var(--red-soft); color: var(--red); }
+
 .table-wrap { overflow-x: auto; overflow-y: visible; border: 1.5px solid var(--border-2); border-radius: var(--r); -webkit-overflow-scrolling: touch; }
 /* Smooth, always-usable horizontal scrollbar so wide tables are fully reachable. */
 .table-wrap::-webkit-scrollbar, .detail-scroll::-webkit-scrollbar { height: 12px; }

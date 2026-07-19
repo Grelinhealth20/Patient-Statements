@@ -77,8 +77,10 @@ api.interceptors.response.use(
 /** Statement Generator endpoints (DB-backed patient/DOS/generation workflow). */
 export const statementsApi = {
   import: (fileName, rows) => api.post('/statements/import', { fileName, rows }).then((r) => r.data),
-  patients: (page = 1, pageSize = 10) =>
-    api.get('/statements/patients', { params: { page, pageSize } }).then((r) => r.data),
+  patients: (page = 1, pageSize = 10, search = '') =>
+    api
+      .get('/statements/patients', { params: { page, pageSize, ...(search ? { search } : {}) } })
+      .then((r) => r.data),
   pendingPatients: () => api.get('/statements/patients/pending').then((r) => r.data),
   // Live financial summary (real DB aggregate): total outstanding Patient Responsibility.
   summary: () => api.get('/statements/summary').then((r) => r.data),

@@ -209,6 +209,14 @@ function CombineIcon({ size = 13 }) {
   );
 }
 
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="7" /><path d="M21 21l-4.3-4.3" />
+    </svg>
+  );
+}
+
 /** Inline processing spinner. `dark` uses the brand color (for light buttons). */
 function Spinner({ dark = false }) {
   return <span className={`inline-spinner${dark ? ' dark' : ''}`} aria-hidden="true" />;
@@ -786,12 +794,20 @@ export default function StatementHome() {
   const [tierStatus, setTierStatus] = useState(null); // live billing tier for the table's Tier column
   const [downloading, setDownloading] = useState(''); // patient key whose stored PDF is downloading
   const [expanded, setExpanded] = useState({}); // key -> { open, loading, dos }
+  const [searchInput, setSearchInput] = useState(''); // raw search box value (updates on keystroke)
+  const [search, setSearch] = useState(''); // debounced, committed search term sent to the server
+  const searchRef = useRef(''); // always holds the current committed term so every reload keeps it
 
-  // Load one page of the patient table (rows + pagination + aggregate totals).
+  // Keep the ref in sync so loadPage (and every caller of it) always uses the
+  // current committed search term without threading it through each call site.
+  useEffect(() => { searchRef.current = search; }, [search]);
+
+  // Load one page of the patient table (rows + pagination + aggregate totals),
+  // honouring the active patient-name search.
   const loadPage = useCallback(async (p) => {
     setPaging(true);
     try {
-      const data = await statementsApi.patients(p, PAGE_SIZE);
+      const data = await statementsApi.patients(p, PAGE_SIZE, searchRef.current);
       setPatients(data.patients || []);
       setPagination(data.pagination || null);
       setTotals(data.totals || { patients: 0, dos: 0, pending: 0, generated: 0 });
@@ -844,8 +860,20 @@ export default function StatementHome() {
     }
   }, []);
 
-  // Fetch the page whenever it changes (and on first mount); load the selector + tier once.
-  useEffect(() => { loadPage(page); }, [page, loadPage]);
+  // Debounce the search box (real-time, but not a request per keystroke): 300ms after
+  // the user stops typing, commit the term and jump back to page 1. Both state updates
+  // are batched, so the table reloads exactly once with the new term.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setSearch(searchInput.trim());
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  // Fetch the page whenever the page OR the search term changes (and on first mount);
+  // load the selector + tier once.
+  useEffect(() => { loadPage(page); }, [page, search, loadPage]);
   useEffect(() => { loadPending(); }, [loadPending]);
   useEffect(() => { loadTier(); }, [loadTier]);
 
@@ -1211,9 +1239,23 @@ export default function StatementHome() {
         <div className="panel-head">
           <div className="panel-title-wrap">
             <h2>Patient Statements</h2>
-            <span className="count-badge">{totals.patients}</span>
+            <span className="count-badge">{pagination?.total ?? totals.patients}</span>
           </div>
           <div className="panel-head-actions">
+            <div className="search-box statements-search">
+              <SearchIcon />
+              <input
+                type="search"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                placeholder="Search by patient name…"
+                aria-label="Search patient statements by name"
+                autoComplete="off"
+              />
+              {searchInput && (
+                <button type="button" className="search-clear" onClick={() => setSearchInput('')} aria-label="Clear search">✕</button>
+              )}
+            </div>
             {fileName && <span className="dash-lastfile" title={fileName}>Last import · {fileName}</span>}
             <button
               className="btn-verify-all"
@@ -1252,7 +1294,11 @@ export default function StatementHome() {
               {loading ? (
                 <tr><td colSpan={genColSpan} className="table-empty">Loading patient statements…</td></tr>
               ) : patients.length === 0 ? (
-                <tr><td colSpan={genColSpan} className="table-empty">No patients yet — upload a statement file above to populate this table.</td></tr>
+                <tr><td colSpan={genColSpan} className="table-empty">
+                  {search
+                    ? `No patients match “${search}”. Try a different name or clear the search.`
+                    : 'No patients yet — upload a statement file above to populate this table.'}
+                </td></tr>
               ) : (
                 patients.map((p) => (
                   <PatientRow key={p.key} p={p} ex={expanded[p.key]} onToggle={() => loadDos(p.key)} onValidate={onValidate} validating={validating === p.key} onDownloadFile={downloadStored} downloading={downloading === p.key} tier={tierStatus} onSaveAddress={onSaveAddress} savingAddress={savingAddress} onCombine={(stmt) => setCombineFor(stmt)} />

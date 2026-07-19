@@ -224,8 +224,16 @@ export async function listPatients(req, res, next) {
 
     const pageSize = intParam(req.query.pageSize, DEFAULT_PAGE_SIZE, 1, MAX_PAGE_SIZE);
 
-    // Aggregate totals across ALL of this user's patients (for the KPI row and
-    // pagination), independent of the current page.
+    // Optional real-time search by patient name (or account number). LIKE wildcards
+    // in the user's input are escaped so a literal % or _ can't broaden the match.
+    const search = s(req.query.search || '').slice(0, 100);
+    const likeParam = search ? `%${search.replace(/[\\%_]/g, '\\$&')}%` : null;
+    const searchClause = search
+      ? 'AND (d.patient_name LIKE :search OR d.account_number LIKE :search)'
+      : '';
+
+    // Aggregate totals across ALL of this user's patients (for the KPI row),
+    // independent of the current page and of any active search.
     const [[agg]] = await pool.query(
       `SELECT
          COUNT(*)                     AS totalPatients,
@@ -241,12 +249,28 @@ export async function listPatients(req, res, next) {
        ) g`,
       { userId }
     );
-    const total = Number(agg.totalPatients || 0);
-    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const total = Number(agg.totalPatients || 0); // overall (drives the KPI row)
+
+    // When searching, pagination reflects only the matching patients.
+    let matchTotal = total;
+    if (search) {
+      const [[fc]] = await pool.query(
+        `SELECT COUNT(*) AS c FROM (
+           SELECT d.patient_key
+           FROM statement_dos d
+           WHERE ${uidClause(req, 'd.user_id')} ${searchClause}
+           GROUP BY d.patient_key
+         ) g`,
+        { userId, search: likeParam }
+      );
+      matchTotal = Number(fc.c || 0);
+    }
+
+    const totalPages = Math.max(1, Math.ceil(matchTotal / pageSize));
     const page = Math.min(intParam(req.query.page, 1, 1, Number.MAX_SAFE_INTEGER), totalPages);
     const offset = (page - 1) * pageSize;
 
-    const pagination = { page, pageSize, total, totalPages };
+    const pagination = { page, pageSize, total: matchTotal, totalPages, search };
     const totals = {
       patients: total,
       dos: Number(agg.totalDos || 0),
@@ -267,11 +291,11 @@ export async function listPatients(req, res, next) {
          MAX(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(d.data, '$.addressValidationProvider')) IN ('usps','google')
                   THEN 1 ELSE 0 END)                     AS addrValidated
        FROM statement_dos d
-       WHERE ${uidClause(req, 'd.user_id')}
+       WHERE ${uidClause(req, 'd.user_id')} ${searchClause}
        GROUP BY d.patient_key
        ORDER BY addrValidated ASC, MAX(d.patient_name)
        LIMIT ${pageSize} OFFSET ${offset}`,
-      { userId }
+      { userId, ...(likeParam ? { search: likeParam } : {}) }
     );
 
     if (!rows.length) {
