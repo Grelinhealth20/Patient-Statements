@@ -13,6 +13,7 @@ import {
   addressValidationStatus,
   generateStatement,
   storeStatementPdf,
+  mergeStatementPdf,
   downloadStatement,
 } from '../controllers/statementController.js';
 
@@ -43,6 +44,13 @@ router.post(
   '/:id/pdf',
   raw({ type: ['application/pdf', 'application/octet-stream'], limit: env.s3.maxPdfBytes }),
   storeStatementPdf
+);
+// Combine an additional PDF into a generated statement (append + re-store, same name).
+// One raw PDF per request; the client sends multiple files in order.
+router.post(
+  '/:id/merge',
+  raw({ type: ['application/pdf', 'application/octet-stream'], limit: env.s3.maxPdfBytes }),
+  mergeStatementPdf
 );
 // Hand back a short-lived presigned download URL for a stored statement PDF.
 router.get('/:id/download', downloadStatement);

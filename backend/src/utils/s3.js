@@ -154,6 +154,24 @@ export async function getObjectText(key) {
 }
 
 /**
+ * Read a binary object from S3 as a Buffer. Used server-side to fetch a stored
+ * statement PDF so additional documents can be merged into it (the bytes never
+ * touch the browser, so no S3 CORS is required).
+ */
+export async function getObjectBytes(key) {
+  const s3 = getClient();
+  try {
+    const out = await s3.send(new GetObjectCommand({ Bucket: env.s3.bucket, Key: key }));
+    return Buffer.from(await out.Body.transformToByteArray());
+  } catch (err) {
+    if (err?.$metadata?.httpStatusCode === 404 || err?.name === 'NoSuchKey') {
+      throw new S3StorageError(`Object not found: ${key}`, 404);
+    }
+    throw new S3StorageError(`Could not read ${key}: ${err.message}`, 502);
+  }
+}
+
+/**
  * Short-lived presigned GET URL for an arbitrary object. The desktop updater is
  * redirected here to download the (large) installer directly from S3, so the bytes
  * never flow through the API and the bucket stays fully private.

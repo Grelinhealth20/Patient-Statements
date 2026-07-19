@@ -201,6 +201,14 @@ function PencilIcon() {
   );
 }
 
+function CombineIcon({ size = 13 }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width={size} height={size} aria-hidden="true">
+      <path d="M12 2l9 5-9 5-9-5 9-5z" /><path d="M3 12l9 5 9-5" /><path d="M3 17l9 5 9-5" />
+    </svg>
+  );
+}
+
 /** Inline processing spinner. `dark` uses the brand color (for light buttons). */
 function Spinner({ dark = false }) {
   return <span className={`inline-spinner${dark ? ' dark' : ''}`} aria-hidden="true" />;
@@ -250,7 +258,7 @@ function TierPill({ status }) {
 }
 
 /** One patient row plus its expandable list of dates of service. */
-function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, downloading, tier, onSaveAddress, savingAddress }) {
+function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, downloading, tier, onSaveAddress, savingAddress, onCombine }) {
   const hasFile = !!p.lastFileName && !!p.lastStatementId;
   const [editing, setEditing] = useState(false);
   const [l1, setL1] = useState('');
@@ -355,19 +363,29 @@ function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, d
         <td>{fmtDate(p.lastGeneratedAt)}</td>
         <td className="mono" title={hasFile ? `Download ${p.lastFileName} from secure storage` : p.lastFileName}>
           {hasFile ? (
-            <button
-              type="button"
-              className="file-link"
-              disabled={downloading}
-              onClick={(e) => { e.stopPropagation(); onDownloadFile(p); }}
-              title={`Download ${p.lastFileName} from secure storage`}
-            >
-              {downloading ? (
-                <span className="file-link-busy"><span className="file-link-spinner" aria-hidden="true" /> Downloading…</span>
-              ) : (
-                <span className="file-link-inner"><DownloadIcon /> {p.lastFileName}</span>
-              )}
-            </button>
+            <div className="file-cell">
+              <button
+                type="button"
+                className="file-link"
+                disabled={downloading}
+                onClick={(e) => { e.stopPropagation(); onDownloadFile(p); }}
+                title={`Download ${p.lastFileName} from secure storage`}
+              >
+                {downloading ? (
+                  <span className="file-link-busy"><span className="file-link-spinner" aria-hidden="true" /> Downloading…</span>
+                ) : (
+                  <span className="file-link-inner"><DownloadIcon /> {p.lastFileName}</span>
+                )}
+              </button>
+              <button
+                type="button"
+                className="btn-combine"
+                onClick={(e) => { e.stopPropagation(); onCombine({ statementId: p.lastStatementId, fileName: p.lastFileName }); }}
+                title="Combine additional PDF documents into this statement (kept as one file, same name)"
+              >
+                <CombineIcon /> Combine PDF
+              </button>
+            </div>
           ) : (
             p.lastFileName || '—'
           )}
@@ -611,6 +629,138 @@ function VerifyAllModal({ onClose, onDone }) {
   );
 }
 
+const prettyBytes = (n) => {
+  const b = Number(n) || 0;
+  if (b < 1024) return `${b} B`;
+  if (b < 1048576) return `${(b / 1024).toFixed(0)} KB`;
+  return `${(b / 1048576).toFixed(1)} MB`;
+};
+
+/**
+ * "Combine documents" popup. For a generated & stored statement, the user drops one
+ * or more additional PDFs; each is appended (in order) to the statement's stored PDF
+ * on the server and the combined document is saved back under the SAME file name.
+ * Files are sent one at a time so page order is deterministic and each result is
+ * reported individually. All merging is real (server-side pdf-lib) — no mock.
+ */
+function CombineModal({ statement, onClose, onDone }) {
+  const [files, setFiles] = useState([]); // { file, name, size, status, msg, addedPages }
+  const [dragging, setDragging] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [finished, setFinished] = useState(false);
+  const [note, setNote] = useState('');
+  const inputRef = useRef(null);
+
+  const addFiles = (list) => {
+    const all = Array.from(list || []);
+    const pdfs = all.filter((f) => /\.pdf$/i.test(f.name) || f.type === 'application/pdf');
+    const rejected = all.length - pdfs.length;
+    setNote(rejected ? `${rejected} non-PDF file${rejected === 1 ? '' : 's'} skipped — only PDFs can be combined.` : '');
+    if (pdfs.length) {
+      setFinished(false);
+      setFiles((prev) => [...prev, ...pdfs.map((f) => ({ file: f, name: f.name, size: f.size, status: 'queued' }))]);
+    }
+  };
+  const onDrop = (e) => { e.preventDefault(); setDragging(false); if (!running) addFiles(e.dataTransfer.files); };
+  const onSelect = (e) => { addFiles(e.target.files); e.target.value = ''; };
+  const removeAt = (i) => setFiles((prev) => prev.filter((_, j) => j !== i));
+
+  const pending = files.filter((f) => f.status !== 'done');
+
+  const run = async () => {
+    if (!pending.length) return;
+    setRunning(true);
+    let ok = 0, fail = 0;
+    for (let i = 0; i < files.length; i += 1) {
+      if (files[i].status === 'done') continue;
+      setFiles((prev) => prev.map((f, j) => (j === i ? { ...f, status: 'merging', msg: '' } : f)));
+      try {
+        const buf = await files[i].file.arrayBuffer();
+        const res = await statementsApi.mergePdf(statement.statementId, new Blob([buf], { type: 'application/pdf' }));
+        setFiles((prev) => prev.map((f, j) => (j === i ? { ...f, status: 'done', addedPages: res.addedPages } : f)));
+        ok += 1;
+      } catch (err) {
+        setFiles((prev) => prev.map((f, j) => (j === i ? { ...f, status: 'error', msg: err?.response?.data?.message || 'Could not combine this file.' } : f)));
+        fail += 1;
+      }
+    }
+    setRunning(false);
+    setFinished(true);
+    if (ok > 0) onDone(); // refresh table (size / stored time)
+  };
+
+  const close = () => { if (!running) onClose(); };
+
+  return (
+    <div className="api-modal-overlay" role="dialog" aria-modal="true" aria-label="Combine documents into statement" onClick={close}>
+      <div className="api-modal va-modal" onClick={(e) => e.stopPropagation()}>
+        {!running && <button className="api-modal-x" onClick={close} aria-label="Close">×</button>}
+        <div className="api-modal-head">
+          <span className="va-spark" aria-hidden="true"><CombineIcon size={18} /></span>
+          <div>
+            <h3>Combine documents</h3>
+            <p className="api-modal-provider" title={statement.fileName}>Appends to <strong>{statement.fileName}</strong> — one combined PDF, same name.</p>
+          </div>
+        </div>
+
+        <div
+          className={`dropzone combine-dz ${dragging ? 'drag' : ''}`}
+          onDragOver={(e) => { if (!running) { e.preventDefault(); setDragging(true); } }}
+          onDragLeave={(e) => { e.preventDefault(); setDragging(false); }}
+          onDrop={onDrop}
+          onClick={() => !running && inputRef.current?.click()}
+          role="button" tabIndex={0}
+          onKeyDown={(e) => !running && (e.key === 'Enter' || e.key === ' ') && inputRef.current?.click()}
+        >
+          <input ref={inputRef} type="file" accept="application/pdf,.pdf" multiple hidden onChange={onSelect} />
+          <div className="dz-icon"><CombineIcon size={22} /></div>
+          <p className="dz-title">Drag &amp; drop PDF documents</p>
+          <p className="dz-sub">or <span className="dz-link">browse to add</span> · appended in the order shown</p>
+        </div>
+
+        {note && <p className="va-note" style={{ marginTop: 10 }}>{note}</p>}
+
+        {files.length > 0 && (
+          <ul className="combine-list">
+            {files.map((f, i) => (
+              <li key={`${f.name}-${i}`} className={`combine-item is-${f.status}`}>
+                <span className="combine-file" title={f.name}>
+                  <span className="combine-order">{i + 1}</span>
+                  <span className="combine-name">{f.name}</span>
+                  <span className="combine-size">{prettyBytes(f.size)}</span>
+                </span>
+                <span className="combine-state">
+                  {f.status === 'queued' && !running && <button className="combine-remove" onClick={() => removeAt(i)} title="Remove">✕</button>}
+                  {f.status === 'queued' && running && <span className="combine-badge">Queued</span>}
+                  {f.status === 'merging' && <span className="combine-badge busy"><Spinner dark /> Combining…</span>}
+                  {f.status === 'done' && <span className="combine-badge ok">✓ Added{f.addedPages ? ` ${f.addedPages}p` : ''}</span>}
+                  {f.status === 'error' && <span className="combine-badge fail" title={f.msg}>✕ Failed</span>}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {files.some((f) => f.status === 'error') && (
+          <p className="va-note">Some files could not be combined. Hover a “Failed” badge for the reason; remove and retry if needed.</p>
+        )}
+
+        <div className="va-actions" style={{ gap: 10 }}>
+          {finished && !pending.length ? (
+            <button className="btn-primary btn-compact" onClick={close}>Done</button>
+          ) : (
+            <>
+              <button className="btn-secondary" onClick={close} disabled={running}>Cancel</button>
+              <button className="btn-primary btn-compact" onClick={run} disabled={running || !pending.length}>
+                {running ? <span className="btn-inline"><Spinner /> Combining…</span> : `Combine ${pending.length || ''} & Save`}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function StatementHome() {
   const { push } = useToast();
   const inputRef = useRef(null);
@@ -632,6 +782,7 @@ export default function StatementHome() {
   const [savingAddress, setSavingAddress] = useState(''); // patient key whose edited address is saving
   const [apiStatus, setApiStatus] = useState(null); // live Address Validation API plan status (popup)
   const [verifyAllOpen, setVerifyAllOpen] = useState(false); // "Verify All Addresses" batch popup
+  const [combineFor, setCombineFor] = useState(null); // { statementId, fileName } for the Combine popup
   const [tierStatus, setTierStatus] = useState(null); // live billing tier for the table's Tier column
   const [downloading, setDownloading] = useState(''); // patient key whose stored PDF is downloading
   const [expanded, setExpanded] = useState({}); // key -> { open, loading, dos }
@@ -941,6 +1092,13 @@ export default function StatementHome() {
           onDone={() => { loadPage(1); loadTier(); }}
         />
       )}
+      {combineFor && (
+        <CombineModal
+          statement={combineFor}
+          onClose={() => setCombineFor(null)}
+          onDone={() => loadPage(page)}
+        />
+      )}
 
       {/* Command row: upload | summary cards | Send to Engine — one straight line,
           broken out full-width to align with the patient table below. */}
@@ -1097,7 +1255,7 @@ export default function StatementHome() {
                 <tr><td colSpan={genColSpan} className="table-empty">No patients yet — upload a statement file above to populate this table.</td></tr>
               ) : (
                 patients.map((p) => (
-                  <PatientRow key={p.key} p={p} ex={expanded[p.key]} onToggle={() => loadDos(p.key)} onValidate={onValidate} validating={validating === p.key} onDownloadFile={downloadStored} downloading={downloading === p.key} tier={tierStatus} onSaveAddress={onSaveAddress} savingAddress={savingAddress} />
+                  <PatientRow key={p.key} p={p} ex={expanded[p.key]} onToggle={() => loadDos(p.key)} onValidate={onValidate} validating={validating === p.key} onDownloadFile={downloadStored} downloading={downloading === p.key} tier={tierStatus} onSaveAddress={onSaveAddress} savingAddress={savingAddress} onCombine={(stmt) => setCombineFor(stmt)} />
                 ))
               )}
             </tbody>

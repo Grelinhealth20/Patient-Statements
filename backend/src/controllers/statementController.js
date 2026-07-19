@@ -8,8 +8,10 @@ import {
   buildStatementKey,
   putStatementPdf,
   getPresignedDownloadUrl,
+  getObjectBytes,
   S3StorageError,
 } from '../utils/s3.js';
+import { PDFDocument } from 'pdf-lib';
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -1002,6 +1004,108 @@ export async function storeStatementPdf(req, res, next) {
     });
 
     return res.json({ stored: true, statementId, fileName: stmt.fileName, size: body.length });
+  } catch (err) {
+    if (err instanceof S3StorageError) {
+      return res.status(err.status || 502).json({ message: err.message });
+    }
+    next(err);
+  }
+}
+
+/* --------------------------------------------- POST /:id/merge (append PDF) */
+
+// A combined statement (statement + attached documents) can exceed a single
+// generated PDF, so the merged result gets a higher ceiling than one upload.
+const MERGE_MAX_BYTES = Math.max(env.s3.maxPdfBytes * 3, 64 * 1024 * 1024);
+
+/**
+ * Append an uploaded PDF to a generated statement's stored PDF and re-store the
+ * combined document under the SAME S3 key and file name — so the statement keeps
+ * its exact name and download link. The statement's pages come first, then the
+ * uploaded document's pages, preserving page order.
+ *
+ * The current stored PDF is fetched from S3 server-side (no browser CORS needed)
+ * and merged with pdf-lib. Ownership is enforced and the payload is validated as a
+ * real PDF. Call once per additional file (the client sends them in order); each
+ * call appends to the growing document.
+ */
+export async function mergeStatementPdf(req, res, next) {
+  try {
+    if (!isS3Configured()) {
+      return res.status(503).json({ message: 'Statement storage is not configured on the server.' });
+    }
+    const userId = req.user.id;
+    const statementId = Number(req.params.id);
+    if (!Number.isInteger(statementId) || statementId <= 0) {
+      return res.status(400).json({ message: 'A valid statement id is required.' });
+    }
+    const upload = Buffer.isBuffer(req.body) ? req.body : null;
+    if (!upload || !upload.length) {
+      return res.status(400).json({ message: 'No PDF content was uploaded.' });
+    }
+    if (!upload.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC)) {
+      return res.status(415).json({ message: 'Uploaded content is not a valid PDF.' });
+    }
+
+    const pool = getPool();
+    const [[stmt]] = await pool.query(
+      `SELECT id, user_id AS ownerId, file_name AS fileName, s3_key AS s3Key, account_number AS accountNumber
+         FROM statements WHERE id = :id AND ${uidClause(req)} LIMIT 1`,
+      { id: statementId, userId }
+    );
+    if (!stmt) {
+      return res.status(404).json({ message: 'Statement not found.' });
+    }
+    if (!stmt.s3Key) {
+      return res.status(409).json({
+        message: 'This statement has not been archived yet — generate it before combining documents.',
+        code: 'NOT_STORED',
+      });
+    }
+
+    // Fetch the current stored statement PDF, then append the uploaded document.
+    const baseBytes = await getObjectBytes(stmt.s3Key);
+    let mergedBuffer;
+    let addedPages;
+    try {
+      const base = await PDFDocument.load(baseBytes, { ignoreEncryption: true });
+      const add = await PDFDocument.load(upload, { ignoreEncryption: true });
+      const pages = await base.copyPages(add, add.getPageIndices());
+      pages.forEach((pg) => base.addPage(pg));
+      addedPages = pages.length;
+      mergedBuffer = Buffer.from(await base.save());
+    } catch {
+      return res.status(422).json({ message: 'Could not read the uploaded PDF — it may be corrupt or password-protected.' });
+    }
+
+    if (mergedBuffer.length > MERGE_MAX_BYTES) {
+      return res.status(413).json({ message: 'The combined document is too large to store.' });
+    }
+
+    // Write the combined PDF back to the SAME key → same download, same file name.
+    await putStatementPdf({
+      key: stmt.s3Key,
+      body: mergedBuffer,
+      contentType: 'application/pdf',
+      metadata: {
+        'user-id': String(stmt.ownerId),
+        'statement-id': String(statementId),
+        'account-number': s(stmt.accountNumber),
+        merged: '1',
+      },
+    });
+    await pool.query(
+      `UPDATE statements SET file_size = :size, stored_at = NOW() WHERE id = :id AND ${uidClause(req)}`,
+      { size: mergedBuffer.length, id: statementId, userId }
+    );
+    await writeAudit({
+      actorId: userId,
+      action: 'statements.merge',
+      targetId: statementId,
+      detail: `file=${stmt.fileName} addedPages=${addedPages} bytes=${mergedBuffer.length}`,
+    });
+
+    return res.json({ merged: true, statementId, fileName: stmt.fileName, size: mergedBuffer.length, addedPages });
   } catch (err) {
     if (err instanceof S3StorageError) {
       return res.status(err.status || 502).json({ message: err.message });

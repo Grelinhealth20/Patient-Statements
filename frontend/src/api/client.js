@@ -102,6 +102,11 @@ export const statementsApi = {
   // Fetch a short-lived presigned URL to download a stored statement PDF.
   downloadUrl: (statementId) =>
     api.get(`/statements/${statementId}/download`).then((r) => r.data),
+  // Append an additional PDF to a generated statement (raw PDF bytes; same name kept).
+  mergePdf: (statementId, blob) =>
+    api
+      .post(`/statements/${statementId}/merge`, blob, { headers: { 'Content-Type': 'application/pdf' } })
+      .then((r) => r.data),
 };
 
 export default api;

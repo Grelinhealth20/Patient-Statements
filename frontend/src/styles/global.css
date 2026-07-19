@@ -880,6 +880,49 @@ input, button, select, textarea { font-family: inherit; }
   border-top-color: var(--primary); animation: engine-spin 0.7s linear infinite;
 }
 
+/* File-name cell: download link + "Combine PDF" action stacked. */
+.file-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
+.btn-combine {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border-radius: 6px;
+  font-family: var(--display); font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap;
+  color: var(--btn-700); background: var(--btn-soft); border: 1px solid #e6cba8;
+  transition: background 0.14s, border-color 0.14s;
+}
+.btn-combine:hover { background: #f1dec3; border-color: var(--btn); }
+.btn-combine svg { flex: none; }
+
+/* ---- Combine documents popup ---- */
+.combine-dz { margin-top: 4px; padding: 20px 18px; }
+.combine-dz .dz-icon { width: 42px; height: 42px; margin-bottom: 9px; }
+.combine-list {
+  list-style: none; margin: 12px 0 0; padding: 0; max-height: 205px; overflow-y: auto;
+  border: 1px solid var(--border-2); border-radius: 10px;
+}
+.combine-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 9px 12px; border-bottom: 1px solid var(--border); font-size: 12.5px;
+}
+.combine-item:last-child { border-bottom: none; }
+.combine-item.is-error { background: var(--red-soft); }
+.combine-item.is-done { background: var(--green-soft); }
+.combine-file { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.combine-order {
+  flex: none; width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center;
+  font-family: var(--mono); font-size: 10.5px; font-weight: 700; color: #fff; background: var(--navy, #10203f);
+}
+.combine-name { font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 250px; }
+.combine-size { flex: none; color: var(--text-mute); font-weight: 600; font-size: 11px; }
+.combine-state { flex: none; }
+.combine-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 700; color: var(--text-mute); }
+.combine-badge.busy { color: var(--btn-700); }
+.combine-badge.ok { color: var(--green); }
+.combine-badge.fail { color: #be123c; cursor: help; }
+.combine-remove {
+  border: none; background: transparent; color: var(--text-faint); font-size: 15px; line-height: 1;
+  cursor: pointer; padding: 2px 6px; border-radius: 6px;
+}
+.combine-remove:hover { background: var(--red-soft); color: var(--red); }
+
 /* Reusable inline processing spinner for action buttons. */
 .btn-inline { display: inline-flex; align-items: center; gap: 7px; }
 .inline-spinner {
