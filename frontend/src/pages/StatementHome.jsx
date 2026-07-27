@@ -1588,7 +1588,7 @@ export default function StatementHome() {
           </div>
         </div>
 
-        {/* Right — Send to Engine control panel */}
+        {/* Right — Send to Engine control panel (SINGLE generate, one patient) */}
         <section className="panel engine-panel">
           <div className="panel-head">
             <div className="panel-title-wrap">
@@ -1597,6 +1597,9 @@ export default function StatementHome() {
             </div>
           </div>
           <div className="engine-body">
+            <p className="engine-caption">
+              Generate <strong>one</strong> statement for a single selected patient. Only their <strong>new dates of service</strong> are included — anything previously generated is excluded. (For everyone at once, use <strong>Generate All</strong> above the table.)
+            </p>
             <label className="engine-field">
               <span>Select Patient</span>
               <select
@@ -1674,7 +1677,7 @@ export default function StatementHome() {
               className="btn-verify-all btn-generate-all"
               onClick={() => setGenAllOpen(true)}
               disabled={!totals.pending}
-              title="Generate a statement for every pending patient and download them all as a single ZIP."
+              title="Bulk generate: create statements for EVERY patient with new (not previously generated) dates of service, then download them all as one ZIP. Different from Send to Engine, which does one selected patient."
             >
               <IconLayers /> Generate All{totals.pending ? ` (${totals.pending})` : ''}
             </button>

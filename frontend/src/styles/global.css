@@ -837,6 +837,8 @@ input, button, select, textarea { font-family: inherit; }
 /* ---- Send to Engine control panel ---- */
 .engine-panel { display: flex; flex-direction: column; }
 .engine-body { display: flex; flex-direction: column; gap: 14px; padding: 16px 18px 18px; flex: 1; }
+.engine-caption { font-size: 12px; color: var(--text-soft); line-height: 1.5; margin: 0; }
+.engine-caption strong { color: var(--text); font-weight: 700; }
 .engine-field { display: flex; flex-direction: column; gap: 9px; }
 .engine-field > span {
   font-family: var(--display); font-size: 13px; font-weight: 700; letter-spacing: 0.6px;
