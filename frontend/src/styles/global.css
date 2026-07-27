@@ -549,6 +549,13 @@ input, button, select, textarea { font-family: inherit; }
 .btn-verify-all svg { width: 15px; height: 15px; }
 .btn-verify-all:hover:not(:disabled) { filter: brightness(1.06); transform: translateY(-1px); }
 .btn-verify-all:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+/* "Generate All Pending → ZIP" — navy to distinguish it from the copper Verify All. */
+.btn-generate-all { background: linear-gradient(135deg, var(--navy), var(--navy-600)); box-shadow: 0 6px 16px rgba(16, 32, 63, 0.28); }
+
+/* ZIP-name field in the Generate-All popup. */
+.zipname-row { display: flex; align-items: center; gap: 8px; }
+.zipname-row input { flex: 1; }
+.zipname-ext { font-family: var(--mono); font-size: 13px; font-weight: 700; color: var(--text-mute); flex: none; }
 
 .va-modal { max-width: 480px; }
 .va-spark { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex: 0 0 auto;

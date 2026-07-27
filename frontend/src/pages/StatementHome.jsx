@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
+import JSZip from 'jszip';
 import { useToast } from '../components/Toast.jsx';
 import { statementsApi } from '../api/client.js';
 import { groupStatements, buildStatementDoc } from '../lib/statementPdf.js';
@@ -769,6 +770,225 @@ function CombineModal({ statement, onClose, onDone }) {
   );
 }
 
+/**
+ * "Generate All Pending" batch popup. Generates a statement for EVERY patient with
+ * pending dates of service — using the exact same engine as the single-generate flow
+ * (the precise PDF the user would get, archived to S3) — then bundles them all into a
+ * single ZIP and lets the user name and download it. A small concurrency pool keeps it
+ * fast without hammering the server; each PDF is a separate, uniquely-named entry so
+ * statements stay properly separated. Integrates with the existing table (statuses
+ * flip to Generated) without changing any single-patient behavior.
+ */
+function GenerateAllModal({ onClose, onDone }) {
+  const [phase, setPhase] = useState('loading'); // loading | running | done | empty | error
+  const [stats, setStats] = useState({ total: 0, processed: 0, ok: 0, failed: 0 });
+  const [current, setCurrent] = useState('');
+  const [failedList, setFailedList] = useState([]);
+  const [error, setError] = useState('');
+  const [zipName, setZipName] = useState('');
+  const [zipping, setZipping] = useState(false);
+  const zipRef = useRef(null);
+  const cancelRef = useRef(false);
+
+  useEffect(() => {
+    cancelRef.current = false;
+    const zip = new JSZip();
+    zipRef.current = zip;
+    const used = new Set();
+    // Ensure every ZIP entry has a unique, filesystem-safe name so statements that
+    // share a generated file name (same office + DOS range) don't collide.
+    const uniqueName = (name) => {
+      let base = String(name || 'statement.pdf').replace(/[\\/:*?"<>|]/g, '_');
+      if (!/\.pdf$/i.test(base)) base += '.pdf';
+      const key0 = base.toLowerCase();
+      if (!used.has(key0)) { used.add(key0); return base; }
+      const dot = base.lastIndexOf('.');
+      const stem = base.slice(0, dot);
+      const ext = base.slice(dot);
+      let n = 2;
+      let cand;
+      do { cand = `${stem} (${n})${ext}`; n += 1; } while (used.has(cand.toLowerCase()));
+      used.add(cand.toLowerCase());
+      return cand;
+    };
+
+    (async () => {
+      let queue;
+      try {
+        const { patients } = await statementsApi.pendingPatients();
+        queue = (patients || []).filter((p) => (p.pendingCount || 0) > 0);
+      } catch {
+        setError('Could not load the list of pending patients.');
+        setPhase('error');
+        return;
+      }
+      if (!queue.length) { setPhase('empty'); return; }
+      setStats({ total: queue.length, processed: 0, ok: 0, failed: 0 });
+      setPhase('running');
+
+      const CONCURRENCY = 3;
+      const fails = [];
+      let ok = 0;
+      let failed = 0;
+      let idx = 0;
+      const worker = async () => {
+        while (idx < queue.length && !cancelRef.current) {
+          const patient = queue[idx];
+          idx += 1;
+          setCurrent(patient.patientName || patient.key);
+          try {
+            const { statement, rows } = await statementsApi.generate(patient.key);
+            const groups = groupStatements(rows || []);
+            if (!groups.length) throw new Error('No dates of service to render.');
+            const doc = buildStatementDoc(groups[0]);
+            const blob = doc.output('blob');
+            // Archive to S3 (best-effort) so the table's download stays available.
+            if (statement.storageEnabled && statement.id) {
+              try { await statementsApi.storePdf(statement.id, blob); } catch { /* archival best-effort */ }
+            }
+            zip.file(uniqueName(statement.fileName), blob);
+            ok += 1;
+          } catch (err) {
+            failed += 1;
+            fails.push({ key: patient.key, name: patient.patientName || patient.key, reason: err?.response?.data?.message || err?.message || 'Could not generate.' });
+          }
+          setStats((st) => ({ ...st, processed: st.processed + 1, ok, failed }));
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));
+      setFailedList(fails);
+      setCurrent('');
+      const d = new Date();
+      const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      setZipName(`Patient_Statements_${stamp}`);
+      setPhase('done');
+      onDone(); // refresh the table + selector (statuses now Generated)
+    })();
+    return () => { cancelRef.current = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const { total, processed, ok, failed } = stats;
+  const pct = total ? Math.round((processed / total) * 100) : 0;
+  const running = phase === 'running';
+  const close = () => { cancelRef.current = true; onClose(); };
+
+  const download = async () => {
+    const zip = zipRef.current;
+    if (!zip) return;
+    setZipping(true);
+    try {
+      const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+      let name = (zipName || 'Patient_Statements').trim().replace(/[\\/:*?"<>|]/g, '_') || 'Patient_Statements';
+      if (!/\.zip$/i.test(name)) name += '.zip';
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+    } finally {
+      setZipping(false);
+    }
+  };
+
+  return (
+    <div className="api-modal-overlay" role="dialog" aria-modal="true" aria-label="Generate all pending statements" onClick={running ? undefined : close}>
+      <div className="api-modal va-modal" onClick={(e) => e.stopPropagation()}>
+        {!running && <button className="api-modal-x" onClick={close} aria-label="Close">×</button>}
+        <div className="api-modal-head">
+          <span className={`va-spark${running ? ' spin' : ''}`} aria-hidden="true"><IconLayers /></span>
+          <div>
+            <h3>Generate all pending statements</h3>
+            <p className="api-modal-provider">
+              {phase === 'loading' && 'Loading pending patients…'}
+              {running && `Generating · ${processed} of ${total}`}
+              {phase === 'done' && 'All statements generated & bundled'}
+              {phase === 'empty' && 'Nothing to generate'}
+              {phase === 'error' && 'Could not start'}
+            </p>
+          </div>
+        </div>
+
+        {error && <div className="alert alert-error" role="alert" style={{ margin: '0 0 12px' }}>{error}</div>}
+
+        {(running || phase === 'done') && (
+          <>
+            <div className="va-bar" aria-hidden="true">
+              <div className={`va-bar-fill${running ? ' striped' : ''}`} style={{ width: `${pct}%` }} />
+            </div>
+            <div className="va-progress-row">
+              <span className="va-pct">{pct}%</span>
+              <span className="va-counts">
+                <span className="va-ok">✓ {ok} generated</span>
+                <span className="va-fail">✕ {failed} failed</span>
+              </span>
+            </div>
+            {running && (
+              <p className="va-current">
+                <Spinner /> {current ? <>Generating <strong>{current}</strong>…</> : 'Working…'}
+              </p>
+            )}
+          </>
+        )}
+
+        {phase === 'done' && (
+          <div className="va-summary">
+            <p className="va-done-line">
+              <strong>{ok}</strong> statement{ok === 1 ? '' : 's'} generated and bundled{failed ? ` · ${failed} could not be generated` : ''}.
+            </p>
+            {failed > 0 && (
+              <>
+                <p className="va-note">These were skipped from the ZIP:</p>
+                <ul className="va-fail-list">
+                  {failedList.slice(0, 50).map((f) => (<li key={f.key}><strong>{f.name}</strong> — {f.reason}</li>))}
+                  {failedList.length > 50 && <li>…and {failedList.length - 50} more.</li>}
+                </ul>
+              </>
+            )}
+            {ok > 0 && (
+              <label className="field" style={{ marginTop: 12, marginBottom: 0 }}>
+                <span className="field-label">ZIP file name</span>
+                <div className="zipname-row">
+                  <input
+                    type="text"
+                    value={zipName}
+                    onChange={(e) => setZipName(e.target.value)}
+                    placeholder="Patient_Statements"
+                    aria-label="ZIP file name"
+                    autoFocus
+                  />
+                  <span className="zipname-ext">.zip</span>
+                </div>
+              </label>
+            )}
+          </div>
+        )}
+
+        {phase === 'empty' && (
+          <p className="confirm-text">There are no patients with pending dates of service — every statement is already generated.</p>
+        )}
+
+        <div className="va-actions" style={{ gap: 10 }}>
+          {running ? (
+            <button className="btn-secondary" onClick={() => { cancelRef.current = true; }}>Stop</button>
+          ) : phase === 'done' && ok > 0 ? (
+            <>
+              <button className="btn-secondary" onClick={close} disabled={zipping}>Close</button>
+              <button className="btn-primary btn-compact" onClick={download} disabled={zipping || !zipName.trim()}>
+                {zipping ? <span className="btn-inline"><Spinner /> Preparing ZIP…</span> : <><DownloadIcon /> Download ZIP</>}
+              </button>
+            </>
+          ) : (
+            <button className="btn-primary btn-compact" onClick={close}>Done</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function StatementHome() {
   const { push } = useToast();
   const inputRef = useRef(null);
@@ -790,6 +1010,7 @@ export default function StatementHome() {
   const [savingAddress, setSavingAddress] = useState(''); // patient key whose edited address is saving
   const [apiStatus, setApiStatus] = useState(null); // live Address Validation API plan status (popup)
   const [verifyAllOpen, setVerifyAllOpen] = useState(false); // "Verify All Addresses" batch popup
+  const [genAllOpen, setGenAllOpen] = useState(false); // "Generate All Pending → ZIP" batch popup
   const [combineFor, setCombineFor] = useState(null); // { statementId, fileName } for the Combine popup
   const [tierStatus, setTierStatus] = useState(null); // live billing tier for the table's Tier column
   const [downloading, setDownloading] = useState(''); // patient key whose stored PDF is downloading
@@ -1120,6 +1341,12 @@ export default function StatementHome() {
           onDone={() => { loadPage(1); loadTier(); }}
         />
       )}
+      {genAllOpen && (
+        <GenerateAllModal
+          onClose={() => setGenAllOpen(false)}
+          onDone={() => { loadPage(page); loadPending(); loadTier(); }}
+        />
+      )}
       {combineFor && (
         <CombineModal
           statement={combineFor}
@@ -1257,6 +1484,14 @@ export default function StatementHome() {
               )}
             </div>
             {fileName && <span className="dash-lastfile" title={fileName}>Last import · {fileName}</span>}
+            <button
+              className="btn-verify-all btn-generate-all"
+              onClick={() => setGenAllOpen(true)}
+              disabled={!totals.pending}
+              title="Generate a statement for every pending patient and download them all as a single ZIP."
+            >
+              <IconLayers /> Generate All{totals.pending ? ` (${totals.pending})` : ''}
+            </button>
             <button
               className="btn-verify-all"
               onClick={() => setVerifyAllOpen(true)}
