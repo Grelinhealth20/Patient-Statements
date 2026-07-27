@@ -294,7 +294,9 @@ export async function listPatients(req, res, next) {
        FROM statement_dos d
        WHERE ${uidClause(req, 'd.user_id')} ${searchClause}
        GROUP BY d.patient_key
-       ORDER BY addrValidated ASC, MAX(d.patient_name)
+       -- Pending-status patients (any pending DOS) always sort to the top; within each
+       -- group the existing order is kept (unverified addresses first, then by name).
+       ORDER BY (SUM(d.status = 'pending') > 0) DESC, addrValidated ASC, MAX(d.patient_name)
        LIMIT ${pageSize} OFFSET ${offset}`,
       { userId, ...(likeParam ? { search: likeParam } : {}) }
     );
