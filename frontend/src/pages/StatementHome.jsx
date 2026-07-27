@@ -812,9 +812,10 @@ function CombineModal({ statement, onClose, onDone }) {
  * statements stay properly separated. Integrates with the existing table (statuses
  * flip to Generated) without changing any single-patient behavior.
  */
-function GenerateAllModal({ onClose, onDone }) {
+function GenerateAllModal({ onClose, onDone, onVerifyFirst }) {
   const [phase, setPhase] = useState('loading'); // loading | confirm | running | done | empty | error
   const [pendingCount, setPendingCount] = useState(0);
+  const [unverifiedCount, setUnverifiedCount] = useState(0); // pending patients with unverified USPS address
   const [stats, setStats] = useState({ total: 0, processed: 0, ok: 0, failed: 0 });
   const [current, setCurrent] = useState('');
   const [failedList, setFailedList] = useState([]);
@@ -826,19 +827,27 @@ function GenerateAllModal({ onClose, onDone }) {
   const queueRef = useRef([]);
   const startedRef = useRef(false); // the batch may start once, and only on an explicit click
 
-  // Opening the popup ONLY loads the pending patients to show a confirmation. Nothing
-  // is generated here — generation happens solely when the user clicks "Generate All"
-  // inside this popup (startBatch), so a statement run can never be triggered
-  // automatically (e.g. on mount, refresh, or a StrictMode re-render).
+  // Opening the popup ONLY loads the pending patients (and their USPS address state) to
+  // show a confirmation. Nothing is generated here — generation happens solely when the
+  // user clicks "Generate All" inside this popup (startBatch), so a statement run can
+  // never be triggered automatically (e.g. on mount, refresh, or a StrictMode re-render).
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
         const { patients } = await statementsApi.pendingPatients();
+        // Only patients with NEW dates of service (not previously generated) are eligible.
         const queue = (patients || []).filter((p) => (p.pendingCount || 0) > 0);
         if (!alive) return;
         queueRef.current = queue;
         setPendingCount(queue.length);
+        // Count how many of those have an address USPS hasn't verified yet, so we can
+        // prompt the user to run "Verify All Addresses" first.
+        try {
+          const { patients: addr } = await statementsApi.addressQueue();
+          const unver = new Set((addr || []).filter((a) => !a.validated).map((a) => a.key));
+          if (alive) setUnverifiedCount(queue.filter((p) => unver.has(p.key)).length);
+        } catch { /* address state is advisory only */ }
         setPhase(queue.length ? 'confirm' : 'empty');
       } catch {
         if (!alive) return;
@@ -969,9 +978,14 @@ function GenerateAllModal({ onClose, onDone }) {
         {phase === 'confirm' && (
           <div className="va-summary">
             <p className="confirm-text">
-              This will generate a statement for <strong>{pendingCount}</strong> patient{pendingCount === 1 ? '' : 's'} with pending dates of service, archive each one, and bundle them all into a single ZIP you can name and download.
+              This will generate statements for the <strong>{pendingCount}</strong> patient{pendingCount === 1 ? '' : 's'} that have <strong>new dates of service not previously generated</strong>, archive each one, and bundle them into a single ZIP you can name and download. Patients whose statements are already generated are left untouched.
             </p>
-            <p className="va-note" style={{ margin: '8px 0 0' }}>Nothing runs automatically — statements are generated only when you click <strong>Generate All</strong> below.</p>
+            {unverifiedCount > 0 && (
+              <div className="alert alert-warn" role="alert" style={{ margin: '10px 0 0' }}>
+                <strong>{unverifiedCount}</strong> of these {unverifiedCount === 1 ? 'patients has an address' : 'patients have addresses'} not yet verified with USPS. Verify addresses first so statements carry the correct standardized address.
+              </div>
+            )}
+            <p className="va-note" style={{ margin: '10px 0 0' }}>Nothing runs automatically — statements are generated only when you click <strong>Generate All</strong> below.</p>
           </div>
         )}
 
@@ -1036,6 +1050,11 @@ function GenerateAllModal({ onClose, onDone }) {
           {phase === 'confirm' ? (
             <>
               <button className="btn-secondary" onClick={close}>Cancel</button>
+              {unverifiedCount > 0 && onVerifyFirst && (
+                <button className="btn-secondary" onClick={() => { onVerifyFirst(); onClose(); }} title="Validate all patient addresses with USPS first">
+                  <ShieldCheckIcon /> Verify Addresses First
+                </button>
+              )}
               <button className="btn-primary btn-compact" onClick={startBatch}>
                 <IconLayers /> Generate All ({pendingCount})
               </button>
@@ -1494,6 +1513,7 @@ export default function StatementHome() {
         <GenerateAllModal
           onClose={() => setGenAllOpen(false)}
           onDone={() => { loadPage(page); loadPending(); loadTier(); }}
+          onVerifyFirst={() => setVerifyAllOpen(true)}
         />
       )}
       {deleteOpen && isSuperAdmin && (
