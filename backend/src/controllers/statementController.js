@@ -907,10 +907,14 @@ export async function generateStatement(req, res, next) {
       ? `${namePart}_${dosStamp(dosDates[0])}_${dosStamp(dosDates[dosDates.length - 1])}.pdf`
       : `${namePart}_${stamp()}-${seq}.pdf`;
 
+    // Stamp the generation time from the application's real clock (not the DB's
+    // CURRENT_TIMESTAMP, whose server clock can be skewed), so the "Generated Date"
+    // always reflects the actual moment the statement was generated. mysql2 round-trips
+    // this JS Date consistently, so it reads back as the same instant.
     const [ins] = await conn.query(
-      `INSERT INTO statements (user_id, account_number, patient_name, patient_key, file_name, dos_count)
-       VALUES (:ownerId, :acct, :name, :key, :file, :count)`,
-      { ownerId, acct: accountNumber, name: patientName, key, file: fileName, count: pending.length }
+      `INSERT INTO statements (user_id, account_number, patient_name, patient_key, file_name, dos_count, generated_at)
+       VALUES (:ownerId, :acct, :name, :key, :file, :count, :genAt)`,
+      { ownerId, acct: accountNumber, name: patientName, key, file: fileName, count: pending.length, genAt: new Date() }
     );
     const statementId = ins.insertId;
 

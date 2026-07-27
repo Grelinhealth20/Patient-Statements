@@ -98,6 +98,19 @@ function fmtDate(v) {
   return toMDY(v) || '—';
 }
 
+/**
+ * Format a real timestamp (e.g. the statement's generated_at, an ISO/UTC string) as
+ * the viewer's LOCAL calendar date. Using local date components — not the UTC date
+ * sliced from the ISO string — keeps "Generated Date" on the day the user actually
+ * generated it, even for late-evening generations that cross UTC midnight.
+ */
+function fmtLocalDate(v) {
+  if (!v) return '—';
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return fmtDate(v);
+  return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}/${d.getFullYear()}`;
+}
+
 /** Two-line address cell: primary line + muted secondary line. */
 function AddressCell({ addr }) {
   const line1 = addr?.line1 || '';
@@ -369,7 +382,7 @@ function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, d
           {' / '}{p.dosCount}
         </td>
         <td><StatusPill status={p.status} /></td>
-        <td>{fmtDate(p.lastGeneratedAt)}</td>
+        <td>{fmtLocalDate(p.lastGeneratedAt)}</td>
         <td className="mono" title={hasFile ? `Download ${p.lastFileName} from secure storage` : p.lastFileName}>
           {hasFile ? (
             <div className="file-cell">
@@ -780,7 +793,8 @@ function CombineModal({ statement, onClose, onDone }) {
  * flip to Generated) without changing any single-patient behavior.
  */
 function GenerateAllModal({ onClose, onDone }) {
-  const [phase, setPhase] = useState('loading'); // loading | running | done | empty | error
+  const [phase, setPhase] = useState('loading'); // loading | confirm | running | done | empty | error
+  const [pendingCount, setPendingCount] = useState(0);
   const [stats, setStats] = useState({ total: 0, processed: 0, ok: 0, failed: 0 });
   const [current, setCurrent] = useState('');
   const [failedList, setFailedList] = useState([]);
@@ -789,8 +803,38 @@ function GenerateAllModal({ onClose, onDone }) {
   const [zipping, setZipping] = useState(false);
   const zipRef = useRef(null);
   const cancelRef = useRef(false);
+  const queueRef = useRef([]);
+  const startedRef = useRef(false); // the batch may start once, and only on an explicit click
 
+  // Opening the popup ONLY loads the pending patients to show a confirmation. Nothing
+  // is generated here — generation happens solely when the user clicks "Generate All"
+  // inside this popup (startBatch), so a statement run can never be triggered
+  // automatically (e.g. on mount, refresh, or a StrictMode re-render).
   useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { patients } = await statementsApi.pendingPatients();
+        const queue = (patients || []).filter((p) => (p.pendingCount || 0) > 0);
+        if (!alive) return;
+        queueRef.current = queue;
+        setPendingCount(queue.length);
+        setPhase(queue.length ? 'confirm' : 'empty');
+      } catch {
+        if (!alive) return;
+        setError('Could not load the list of pending patients.');
+        setPhase('error');
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  // Runs ONLY on an explicit click of "Generate All" inside this popup. The
+  // startedRef guard means a double-click (or any re-render) can never launch a
+  // second batch.
+  const startBatch = async () => {
+    if (startedRef.current) return;
+    startedRef.current = true;
     cancelRef.current = false;
     const zip = new JSZip();
     zipRef.current = zip;
@@ -812,61 +856,49 @@ function GenerateAllModal({ onClose, onDone }) {
       return cand;
     };
 
-    (async () => {
-      let queue;
-      try {
-        const { patients } = await statementsApi.pendingPatients();
-        queue = (patients || []).filter((p) => (p.pendingCount || 0) > 0);
-      } catch {
-        setError('Could not load the list of pending patients.');
-        setPhase('error');
-        return;
-      }
-      if (!queue.length) { setPhase('empty'); return; }
-      setStats({ total: queue.length, processed: 0, ok: 0, failed: 0 });
-      setPhase('running');
+    const queue = queueRef.current;
+    if (!queue.length) { setPhase('empty'); return; }
+    setStats({ total: queue.length, processed: 0, ok: 0, failed: 0 });
+    setPhase('running');
 
-      const CONCURRENCY = 3;
-      const fails = [];
-      let ok = 0;
-      let failed = 0;
-      let idx = 0;
-      const worker = async () => {
-        while (idx < queue.length && !cancelRef.current) {
-          const patient = queue[idx];
-          idx += 1;
-          setCurrent(patient.patientName || patient.key);
-          try {
-            const { statement, rows } = await statementsApi.generate(patient.key);
-            const groups = groupStatements(rows || []);
-            if (!groups.length) throw new Error('No dates of service to render.');
-            const doc = buildStatementDoc(groups[0]);
-            const blob = doc.output('blob');
-            // Archive to S3 (best-effort) so the table's download stays available.
-            if (statement.storageEnabled && statement.id) {
-              try { await statementsApi.storePdf(statement.id, blob); } catch { /* archival best-effort */ }
-            }
-            zip.file(uniqueName(statement.fileName), blob);
-            ok += 1;
-          } catch (err) {
-            failed += 1;
-            fails.push({ key: patient.key, name: patient.patientName || patient.key, reason: err?.response?.data?.message || err?.message || 'Could not generate.' });
+    const CONCURRENCY = 3;
+    const fails = [];
+    let ok = 0;
+    let failed = 0;
+    let idx = 0;
+    const worker = async () => {
+      while (idx < queue.length && !cancelRef.current) {
+        const patient = queue[idx];
+        idx += 1;
+        setCurrent(patient.patientName || patient.key);
+        try {
+          const { statement, rows } = await statementsApi.generate(patient.key);
+          const groups = groupStatements(rows || []);
+          if (!groups.length) throw new Error('No dates of service to render.');
+          const doc = buildStatementDoc(groups[0]);
+          const blob = doc.output('blob');
+          // Archive to S3 (best-effort) so the table's download stays available.
+          if (statement.storageEnabled && statement.id) {
+            try { await statementsApi.storePdf(statement.id, blob); } catch { /* archival best-effort */ }
           }
-          setStats((st) => ({ ...st, processed: st.processed + 1, ok, failed }));
+          zip.file(uniqueName(statement.fileName), blob);
+          ok += 1;
+        } catch (err) {
+          failed += 1;
+          fails.push({ key: patient.key, name: patient.patientName || patient.key, reason: err?.response?.data?.message || err?.message || 'Could not generate.' });
         }
-      };
-      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));
-      setFailedList(fails);
-      setCurrent('');
-      const d = new Date();
-      const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      setZipName(`Patient_Statements_${stamp}`);
-      setPhase('done');
-      onDone(); // refresh the table + selector (statuses now Generated)
-    })();
-    return () => { cancelRef.current = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+        setStats((st) => ({ ...st, processed: st.processed + 1, ok, failed }));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));
+    setFailedList(fails);
+    setCurrent('');
+    const d = new Date();
+    const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    setZipName(`Patient_Statements_${stamp}`);
+    setPhase('done');
+    onDone(); // refresh the table + selector (statuses now Generated)
+  };
 
   const { total, processed, ok, failed } = stats;
   const pct = total ? Math.round((processed / total) * 100) : 0;
@@ -903,6 +935,7 @@ function GenerateAllModal({ onClose, onDone }) {
             <h3>Generate all pending statements</h3>
             <p className="api-modal-provider">
               {phase === 'loading' && 'Loading pending patients…'}
+              {phase === 'confirm' && `${pendingCount} patient${pendingCount === 1 ? '' : 's'} with pending dates of service`}
               {running && `Generating · ${processed} of ${total}`}
               {phase === 'done' && 'All statements generated & bundled'}
               {phase === 'empty' && 'Nothing to generate'}
@@ -912,6 +945,15 @@ function GenerateAllModal({ onClose, onDone }) {
         </div>
 
         {error && <div className="alert alert-error" role="alert" style={{ margin: '0 0 12px' }}>{error}</div>}
+
+        {phase === 'confirm' && (
+          <div className="va-summary">
+            <p className="confirm-text">
+              This will generate a statement for <strong>{pendingCount}</strong> patient{pendingCount === 1 ? '' : 's'} with pending dates of service, archive each one, and bundle them all into a single ZIP you can name and download.
+            </p>
+            <p className="va-note" style={{ margin: '8px 0 0' }}>Nothing runs automatically — statements are generated only when you click <strong>Generate All</strong> below.</p>
+          </div>
+        )}
 
         {(running || phase === 'done') && (
           <>
@@ -971,7 +1013,14 @@ function GenerateAllModal({ onClose, onDone }) {
         )}
 
         <div className="va-actions" style={{ gap: 10 }}>
-          {running ? (
+          {phase === 'confirm' ? (
+            <>
+              <button className="btn-secondary" onClick={close}>Cancel</button>
+              <button className="btn-primary btn-compact" onClick={startBatch}>
+                <IconLayers /> Generate All ({pendingCount})
+              </button>
+            </>
+          ) : running ? (
             <button className="btn-secondary" onClick={() => { cancelRef.current = true; }}>Stop</button>
           ) : phase === 'done' && ok > 0 ? (
             <>
