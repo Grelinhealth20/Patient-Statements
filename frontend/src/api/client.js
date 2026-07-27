@@ -109,6 +109,9 @@ export const statementsApi = {
     api
       .post(`/statements/${statementId}/merge`, blob, { headers: { 'Content-Type': 'application/pdf' } })
       .then((r) => r.data),
+  // Delete selected patients + their statements + archived PDFs (super admin only).
+  deletePatients: (keys) =>
+    api.post('/statements/patients/delete', { keys }).then((r) => r.data),
 };
 
 export default api;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import JSZip from 'jszip';
 import { useToast } from '../components/Toast.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
 import { statementsApi } from '../api/client.js';
 import { groupStatements, buildStatementDoc } from '../lib/statementPdf.js';
 
@@ -231,6 +232,14 @@ function SearchIcon() {
   );
 }
 
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
 /** Inline processing spinner. `dark` uses the brand color (for light buttons). */
 function Spinner({ dark = false }) {
   return <span className={`inline-spinner${dark ? ' dark' : ''}`} aria-hidden="true" />;
@@ -280,7 +289,7 @@ function TierPill({ status }) {
 }
 
 /** One patient row plus its expandable list of dates of service. */
-function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, downloading, tier, onSaveAddress, savingAddress, onCombine }) {
+function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, downloading, tier, onSaveAddress, savingAddress, onCombine, selectable, selected, onToggleSelect }) {
   const hasFile = !!p.lastFileName && !!p.lastStatementId;
   const [editing, setEditing] = useState(false);
   const [l1, setL1] = useState('');
@@ -316,6 +325,17 @@ function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, d
         aria-label={`Toggle dates of service for ${p.patientName || p.accountNumber || 'patient'}`}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
       >
+        {selectable && (
+          <td className="sel-cell" onClick={(e) => e.stopPropagation()}>
+            <input
+              type="checkbox"
+              className="row-check"
+              checked={!!selected}
+              onChange={() => onToggleSelect(p.key)}
+              aria-label={`Select ${p.patientName || p.accountNumber || 'patient'} for deletion`}
+            />
+          </td>
+        )}
         <td style={{ textAlign: 'center', color: 'var(--muted, #6E7D91)' }}>{ex?.open ? '▾' : '▸'}</td>
         <td><strong>{p.patientName || '—'}</strong></td>
         <td className="mono">{toMDY(p.patientDob) || p.patientDob || '—'}</td>
@@ -415,7 +435,7 @@ function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, d
       </tr>
       {ex?.open && (
         <tr>
-          <td colSpan={GEN_COLSPAN} style={{ background: '#ffffff', padding: 0 }}>
+          <td colSpan={GEN_COLSPAN + (selectable ? 1 : 0)} style={{ background: '#ffffff', padding: 0 }}>
             {ex.loading ? (
               <div style={{ padding: '12px 16px', color: 'var(--muted, #6E7D91)' }}>Loading dates of service…</div>
             ) : (
@@ -1038,8 +1058,43 @@ function GenerateAllModal({ onClose, onDone }) {
   );
 }
 
+/**
+ * Confirmation popup for deleting selected patients. Super-admin-only action (the
+ * button and the backend route both enforce it). Spells out exactly what is removed —
+ * dates of service, generated statements, and archived PDFs — since it is irreversible.
+ */
+function DeletePatientsModal({ count, onCancel, onConfirm }) {
+  const [busy, setBusy] = useState(false);
+  const confirm = async () => { setBusy(true); try { await onConfirm(); } finally { setBusy(false); } };
+  return (
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Delete selected patients" onClick={busy ? undefined : onCancel}>
+      <div className="modal" style={{ maxWidth: 470 }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div>
+            <h3>Delete {count} patient{count === 1 ? '' : 's'}?</h3>
+            <p>This permanently removes their data — it cannot be undone.</p>
+          </div>
+          <button className="modal-close" onClick={onCancel} disabled={busy} aria-label="Close">×</button>
+        </div>
+        <div className="modal-body">
+          <p className="confirm-text">
+            You are about to permanently delete <strong>{count}</strong> selected patient{count === 1 ? '' : 's'}, including every date of service, every generated statement, and every archived PDF in secure storage.
+          </p>
+        </div>
+        <div className="modal-foot">
+          <button className="btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn-danger" onClick={confirm} disabled={busy}>
+            {busy ? <span className="btn-inline"><Spinner /> Deleting…</span> : `Delete ${count} patient${count === 1 ? '' : 's'}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function StatementHome() {
   const { push } = useToast();
+  const { isSuperAdmin } = useAuth();
   const inputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
   const [parsing, setParsing] = useState(false);
@@ -1067,6 +1122,8 @@ export default function StatementHome() {
   const [searchInput, setSearchInput] = useState(''); // raw search box value (updates on keystroke)
   const [search, setSearch] = useState(''); // debounced, committed search term sent to the server
   const searchRef = useRef(''); // always holds the current committed term so every reload keeps it
+  const [selectedKeys, setSelectedKeys] = useState(() => new Set()); // super-admin multi-select for deletion
+  const [deleteOpen, setDeleteOpen] = useState(false); // delete-confirmation popup
 
   // Keep the ref in sync so loadPage (and every caller of it) always uses the
   // current committed search term without threading it through each call site.
@@ -1129,6 +1186,36 @@ export default function StatementHome() {
       return null;
     }
   }, []);
+
+  // ---- Multi-select (super admin) for deleting patients ----
+  const toggleSelect = useCallback((key) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
+  const clearSelection = useCallback(() => setSelectedKeys(new Set()), []);
+
+  // Delete the selected patients (their DOS, statements, and archived PDFs). The
+  // confirmation popup calls this; errors are surfaced and leave the popup open.
+  const onDeleteSelected = useCallback(async () => {
+    const keys = [...selectedKeys];
+    if (!keys.length) return;
+    try {
+      const res = await statementsApi.deletePatients(keys);
+      push(
+        `Deleted ${res.patients} patient${res.patients === 1 ? '' : 's'} · ${res.statements} statement${res.statements === 1 ? '' : 's'} removed.${res.s3Warning ? ' (some stored PDFs could not be removed)' : ''}`,
+        res.s3Warning ? 'info' : 'success'
+      );
+      setSelectedKeys(new Set());
+      setDeleteOpen(false);
+      await refresh();
+      loadTier();
+    } catch (err) {
+      push(err?.response?.data?.message || 'Could not delete the selected patients.', 'error');
+    }
+  }, [selectedKeys, push, refresh, loadTier]);
 
   // Debounce the search box (real-time, but not a request per keystroke): 300ms after
   // the user stops typing, commit the term and jump back to page 1. Both state updates
@@ -1373,7 +1460,20 @@ export default function StatementHome() {
   // straight from the backend, so they stay accurate across every page.
   const pendingPatients = pendingList;
   const selected = pendingPatients.find((p) => p.key === selectedKey) || null;
-  const genColSpan = GEN_COLSPAN; // 10 columns incl. Tier
+  const genColSpan = GEN_COLSPAN + (isSuperAdmin ? 1 : 0); // + checkbox column for super admins
+
+  // Select-all-on-this-page state for the delete checkboxes.
+  const pageKeys = patients.map((p) => p.key);
+  const allPageSelected = pageKeys.length > 0 && pageKeys.every((k) => selectedKeys.has(k));
+  const somePageSelected = pageKeys.some((k) => selectedKeys.has(k));
+  const toggleSelectAllPage = () => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (allPageSelected) pageKeys.forEach((k) => next.delete(k));
+      else pageKeys.forEach((k) => next.add(k));
+      return next;
+    });
+  };
 
   // If the selected patient is no longer pending (e.g. just generated), clear it
   // so the dropdown never shows a stale, already-generated selection.
@@ -1394,6 +1494,13 @@ export default function StatementHome() {
         <GenerateAllModal
           onClose={() => setGenAllOpen(false)}
           onDone={() => { loadPage(page); loadPending(); loadTier(); }}
+        />
+      )}
+      {deleteOpen && isSuperAdmin && (
+        <DeletePatientsModal
+          count={selectedKeys.size}
+          onCancel={() => setDeleteOpen(false)}
+          onConfirm={onDeleteSelected}
         />
       )}
       {combineFor && (
@@ -1533,6 +1640,16 @@ export default function StatementHome() {
               )}
             </div>
             {fileName && <span className="dash-lastfile" title={fileName}>Last import · {fileName}</span>}
+            {isSuperAdmin && (
+              <button
+                className="btn-verify-all btn-delete-sel"
+                onClick={() => setDeleteOpen(true)}
+                disabled={selectedKeys.size === 0}
+                title="Permanently delete the selected patients, their statements, and archived PDFs (super admin only)."
+              >
+                <TrashIcon /> Delete Selected{selectedKeys.size ? ` (${selectedKeys.size})` : ''}
+              </button>
+            )}
             <button
               className="btn-verify-all btn-generate-all"
               onClick={() => setGenAllOpen(true)}
@@ -1561,6 +1678,20 @@ export default function StatementHome() {
           <table className="data-table">
             <thead>
               <tr>
+                {isSuperAdmin && (
+                  <th className="sel-cell">
+                    <input
+                      type="checkbox"
+                      className="row-check"
+                      checked={allPageSelected}
+                      ref={(el) => { if (el) el.indeterminate = somePageSelected && !allPageSelected; }}
+                      onChange={toggleSelectAllPage}
+                      disabled={pageKeys.length === 0}
+                      aria-label="Select all patients on this page"
+                      title="Select all on this page"
+                    />
+                  </th>
+                )}
                 <th style={{ width: 28 }} />
                 <th>Patient</th>
                 <th>Patient DOB</th>
@@ -1585,7 +1716,7 @@ export default function StatementHome() {
                 </td></tr>
               ) : (
                 patients.map((p) => (
-                  <PatientRow key={p.key} p={p} ex={expanded[p.key]} onToggle={() => loadDos(p.key)} onValidate={onValidate} validating={validating === p.key} onDownloadFile={downloadStored} downloading={downloading === p.key} tier={tierStatus} onSaveAddress={onSaveAddress} savingAddress={savingAddress} onCombine={(stmt) => setCombineFor(stmt)} />
+                  <PatientRow key={p.key} p={p} ex={expanded[p.key]} onToggle={() => loadDos(p.key)} onValidate={onValidate} validating={validating === p.key} onDownloadFile={downloadStored} downloading={downloading === p.key} tier={tierStatus} onSaveAddress={onSaveAddress} savingAddress={savingAddress} onCombine={(stmt) => setCombineFor(stmt)} selectable={isSuperAdmin} selected={selectedKeys.has(p.key)} onToggleSelect={toggleSelect} />
                 ))
               )}
             </tbody>

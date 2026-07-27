@@ -9,6 +9,7 @@ import {
   putStatementPdf,
   getPresignedDownloadUrl,
   getObjectBytes,
+  deleteObjectsByKeys,
   S3StorageError,
 } from '../utils/s3.js';
 import { PDFDocument } from 'pdf-lib';
@@ -1184,6 +1185,86 @@ export async function downloadStatement(req, res, next) {
 
     return res.json({ url, fileName: stmt.fileName, expiresIn: env.s3.presignExpirySeconds });
   } catch (err) {
+    if (err instanceof S3StorageError) {
+      return res.status(err.status || 502).json({ message: err.message });
+    }
+    next(err);
+  }
+}
+
+/* ----------------------------------- POST /patients/delete (super admin only) */
+
+/**
+ * Permanently delete one or more selected patients and everything tied to them:
+ * every date-of-service row, every generated statement record, and every archived
+ * statement PDF in S3. Super-admin only (enforced by requireSuperAdmin on the route).
+ *
+ * The DB rows are removed in a single transaction so a patient is never left half-
+ * deleted; the S3 objects for those patients' statements are then removed (best-effort
+ * — a storage hiccup is reported but doesn't roll back the committed DB deletion).
+ */
+export async function deletePatients(req, res, next) {
+  const pool = getPool();
+  const conn = await pool.getConnection();
+  let released = false;
+  const release = () => { if (!released) { released = true; conn.release(); } };
+  try {
+    const keys = Array.isArray(req.body?.keys)
+      ? [...new Set(req.body.keys.map((k) => s(k)).filter(Boolean))]
+      : [];
+    if (!keys.length) {
+      release();
+      return res.status(400).json({ message: 'Select at least one patient to delete.' });
+    }
+    if (keys.length > 500) {
+      release();
+      return res.status(400).json({ message: 'Too many patients selected at once (max 500).' });
+    }
+
+    const params = {};
+    keys.forEach((k, i) => { params[`k${i}`] = k; });
+    const inList = keys.map((_, i) => `:k${i}`).join(', ');
+
+    // Collect the S3 keys of these patients' stored statement PDFs before deleting the rows.
+    const [stmtRows] = await conn.query(
+      `SELECT s3_key AS s3Key FROM statements WHERE patient_key IN (${inList})`,
+      params
+    );
+    const s3Keys = stmtRows.map((r) => r.s3Key).filter(Boolean);
+
+    await conn.beginTransaction();
+    const [delDos] = await conn.query(`DELETE FROM statement_dos WHERE patient_key IN (${inList})`, params);
+    const [delStmts] = await conn.query(`DELETE FROM statements WHERE patient_key IN (${inList})`, params);
+    await conn.commit();
+    release();
+
+    // Remove the archived PDFs (best-effort — the DB change is already committed).
+    let s3Deleted = 0;
+    let s3Warning = null;
+    if (s3Keys.length) {
+      try { const r = await deleteObjectsByKeys(s3Keys); s3Deleted = r.deleted; }
+      catch (err) { s3Warning = err.message; }
+    }
+
+    await writeAudit({
+      actorId: req.user.id,
+      action: 'statements.deletePatients',
+      detail: `patients=${keys.length} dos=${delDos.affectedRows} statements=${delStmts.affectedRows} s3=${s3Deleted}`,
+    });
+
+    return res.json({
+      deleted: true,
+      patients: keys.length,
+      dos: delDos.affectedRows,
+      statements: delStmts.affectedRows,
+      s3Deleted,
+      s3Warning,
+    });
+  } catch (err) {
+    if (!released) {
+      try { await conn.rollback(); } catch { /* ignore */ }
+      release();
+    }
     if (err instanceof S3StorageError) {
       return res.status(err.status || 502).json({ message: err.message });
     }

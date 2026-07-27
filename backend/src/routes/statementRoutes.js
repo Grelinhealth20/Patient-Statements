@@ -1,5 +1,5 @@
 import { Router, raw } from 'express';
-import { requireAuth, requireStatementAccess, blockIfPasswordChangeRequired } from '../middleware/auth.js';
+import { requireAuth, requireStatementAccess, blockIfPasswordChangeRequired, requireSuperAdmin } from '../middleware/auth.js';
 import { env } from '../config/env.js';
 import {
   importRows,
@@ -15,6 +15,7 @@ import {
   storeStatementPdf,
   mergeStatementPdf,
   downloadStatement,
+  deletePatients,
 } from '../controllers/statementController.js';
 
 const router = Router();
@@ -28,6 +29,9 @@ router.get('/ping', (req, res) => {
 });
 
 router.post('/import', importRows);
+// Delete selected patients + their statements + archived PDFs. SUPER ADMIN ONLY.
+// Placed before the '/patients/:key/...' routes so it is matched unambiguously.
+router.post('/patients/delete', requireSuperAdmin, deletePatients);
 router.get('/patients', listPatients);
 router.get('/summary', financialSummary);
 router.get('/patients/address-queue', addressQueue);

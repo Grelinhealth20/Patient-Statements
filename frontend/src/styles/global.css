@@ -551,6 +551,14 @@ input, button, select, textarea { font-family: inherit; }
 .btn-verify-all:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
 /* "Generate All Pending → ZIP" — navy to distinguish it from the copper Verify All. */
 .btn-generate-all { background: linear-gradient(135deg, var(--navy), var(--navy-600)); box-shadow: 0 6px 16px rgba(16, 32, 63, 0.28); }
+/* "Delete Selected" — destructive red; only shown to super admins. */
+.btn-delete-sel { background: linear-gradient(135deg, #e5395c, #be123c); box-shadow: 0 6px 16px rgba(190, 18, 60, 0.28); }
+.btn-delete-sel:disabled { background: linear-gradient(135deg, #e5395c, #be123c); }
+
+/* Row-select checkbox column (super admin). */
+.data-table th.sel-cell, .data-table td.sel-cell { width: 40px; text-align: center; padding-left: 10px; padding-right: 6px; }
+.row-check { width: 16px; height: 16px; cursor: pointer; accent-color: var(--btn, #cf9455); vertical-align: middle; }
+.data-table tbody tr:hover td.sel-cell { background: inherit; }
 
 /* ZIP-name field in the Generate-All popup. */
 .zipname-row { display: flex; align-items: center; gap: 8px; }

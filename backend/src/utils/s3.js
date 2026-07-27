@@ -219,6 +219,33 @@ export async function deleteAllStatementObjects() {
   }
 }
 
+/**
+ * Delete a specific set of stored objects by key (used when a super admin deletes
+ * selected patients, so only those patients' statement PDFs are removed). Batches in
+ * groups of 1000 (the S3 limit).
+ *
+ * @returns {Promise<{ deleted: number, configured: boolean }>}
+ */
+export async function deleteObjectsByKeys(keys) {
+  if (!isS3Configured()) return { deleted: 0, configured: false };
+  const list = (keys || []).map((k) => s(k)).filter(Boolean);
+  if (!list.length) return { deleted: 0, configured: true };
+  const s3 = getClient();
+  let deleted = 0;
+  try {
+    for (let i = 0; i < list.length; i += 1000) {
+      const objects = list.slice(i, i + 1000).map((Key) => ({ Key }));
+      await s3.send(
+        new DeleteObjectsCommand({ Bucket: env.s3.bucket, Delete: { Objects: objects, Quiet: true } })
+      );
+      deleted += objects.length;
+    }
+    return { deleted, configured: true };
+  } catch (err) {
+    throw new S3StorageError(`Failed to delete stored PDFs from S3: ${err.message}`, 502);
+  }
+}
+
 /** Confirm an object exists (used to guard downloads against a missing key). */
 export async function objectExists(key) {
   const s3 = getClient();
