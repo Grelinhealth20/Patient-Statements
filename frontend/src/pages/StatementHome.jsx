@@ -240,6 +240,20 @@ function TrashIcon() {
   );
 }
 
+/** Sortable (and optionally filterable) table header cell with a sleek chevron. */
+function SortHeader({ label, colKey, sortKey, sortDir, onSort, align, children }) {
+  const active = sortKey === colKey;
+  return (
+    <th className={`th-sortable${align === 'right' ? ' ta-right' : ''}${active ? ' is-sorted' : ''}`}>
+      <button type="button" className="th-sort" onClick={() => onSort(colKey)} title={`Sort by ${label}`}>
+        <span>{label}</span>
+        <span className={`th-chev${active ? ' on' : ''}`} aria-hidden="true">{active ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span>
+      </button>
+      {children}
+    </th>
+  );
+}
+
 /** Inline processing spinner. `dark` uses the brand color (for light buttons). */
 function Spinner({ dark = false }) {
   return <span className={`inline-spinner${dark ? ' dark' : ''}`} aria-hidden="true" />;
@@ -1140,20 +1154,26 @@ export default function StatementHome() {
   const [expanded, setExpanded] = useState({}); // key -> { open, loading, dos }
   const [searchInput, setSearchInput] = useState(''); // raw search box value (updates on keystroke)
   const [search, setSearch] = useState(''); // debounced, committed search term sent to the server
-  const searchRef = useRef(''); // always holds the current committed term so every reload keeps it
+  const [sortKey, setSortKey] = useState(''); // '' = default (pending-first, then A→Z); else name|account|dob|dos|pending
+  const [sortDir, setSortDir] = useState('asc'); // asc | desc
+  const [statusFilter, setStatusFilter] = useState(''); // '' | pending | generated  (Status column filter)
+  // Holds the current query (search + sort + filter) so every reload path keeps them.
+  const queryRef = useRef({ search: '', sort: '', dir: 'asc', status: '' });
   const [selectedKeys, setSelectedKeys] = useState(() => new Set()); // super-admin multi-select for deletion
   const [deleteOpen, setDeleteOpen] = useState(false); // delete-confirmation popup
 
   // Keep the ref in sync so loadPage (and every caller of it) always uses the
   // current committed search term without threading it through each call site.
-  useEffect(() => { searchRef.current = search; }, [search]);
+  useEffect(() => {
+    queryRef.current = { search, sort: sortKey, dir: sortDir, status: statusFilter };
+  }, [search, sortKey, sortDir, statusFilter]);
 
   // Load one page of the patient table (rows + pagination + aggregate totals),
   // honouring the active patient-name search.
   const loadPage = useCallback(async (p) => {
     setPaging(true);
     try {
-      const data = await statementsApi.patients(p, PAGE_SIZE, searchRef.current);
+      const data = await statementsApi.patients(p, PAGE_SIZE, queryRef.current);
       setPatients(data.patients || []);
       setPagination(data.pagination || null);
       setTotals(data.totals || { patients: 0, dos: 0, pending: 0, generated: 0 });
@@ -1249,7 +1269,16 @@ export default function StatementHome() {
 
   // Fetch the page whenever the page OR the search term changes (and on first mount);
   // load the selector + tier once.
-  useEffect(() => { loadPage(page); }, [page, search, loadPage]);
+  useEffect(() => { loadPage(page); }, [page, search, sortKey, sortDir, statusFilter, loadPage]);
+
+  // Header sort: click a column to sort by it; click again to flip direction. Any sort
+  // or filter change jumps back to page 1 so results stay consistent.
+  const applySort = useCallback((key) => {
+    if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortKey(key); setSortDir('asc'); }
+    setPage(1);
+  }, [sortKey]);
+  const applyStatusFilter = useCallback((val) => { setStatusFilter(val); setPage(1); }, []);
   useEffect(() => { loadPending(); }, [loadPending]);
   useEffect(() => { loadTier(); }, [loadTier]);
 
@@ -1716,14 +1745,26 @@ export default function StatementHome() {
                   </th>
                 )}
                 <th style={{ width: 28 }} />
-                <th>Patient</th>
+                <SortHeader label="Patient" colKey="name" sortKey={sortKey} sortDir={sortDir} onSort={applySort} />
                 <th>Patient DOB</th>
-                <th>Account Number</th>
+                <SortHeader label="Account Number" colKey="account" sortKey={sortKey} sortDir={sortDir} onSort={applySort} />
                 <th>Office Address</th>
                 <th>Patient Address</th>
                 <th>Tier</th>
-                <th className="ta-right">DOS (new / total)</th>
-                <th>Status</th>
+                <SortHeader label="DOS (new / total)" colKey="dos" sortKey={sortKey} sortDir={sortDir} onSort={applySort} align="right" />
+                <SortHeader label="Status" colKey="pending" sortKey={sortKey} sortDir={sortDir} onSort={applySort}>
+                  <select
+                    className="th-filter"
+                    value={statusFilter}
+                    onChange={(e) => applyStatusFilter(e.target.value)}
+                    aria-label="Filter by status"
+                    title="Filter by status"
+                  >
+                    <option value="">All</option>
+                    <option value="pending">Pending</option>
+                    <option value="generated">Generated</option>
+                  </select>
+                </SortHeader>
                 <th>Generated Date</th>
                 <th>File Name</th>
               </tr>

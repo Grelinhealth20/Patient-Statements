@@ -233,6 +233,32 @@ export async function listPatients(req, res, next) {
       ? 'AND (d.patient_name LIKE :search OR d.account_number LIKE :search)'
       : '';
 
+    // Header column filters + sorting (server-side, so they apply across all pages).
+    // Only whitelisted expressions are used, so the values can never inject SQL.
+    const SORTABLE = {
+      name: 'MAX(d.patient_name)',
+      account: 'MAX(d.account_number)',
+      dob: 'MAX(d.patient_dob)',
+      dos: 'COUNT(*)',
+      pending: "SUM(d.status = 'pending')",
+    };
+    const sortKey = SORTABLE[s(req.query.sort)] ? s(req.query.sort) : '';
+    const sortDir = s(req.query.dir).toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+    // Status filter: pending patients (any new DOS) or fully-generated ones.
+    const statusFilter = ['pending', 'generated'].includes(s(req.query.status).toLowerCase())
+      ? s(req.query.status).toLowerCase()
+      : '';
+    const statusHaving = statusFilter === 'pending'
+      ? "HAVING SUM(d.status = 'pending') > 0"
+      : statusFilter === 'generated'
+        ? "HAVING SUM(d.status = 'pending') = 0"
+        : '';
+    // Default order: pending patients on top, then patient name A→Z. An explicit column
+    // sort takes over (with name as a stable tiebreaker).
+    const orderBy = sortKey
+      ? `${SORTABLE[sortKey]} ${sortDir}, MAX(d.patient_name) ASC`
+      : "(SUM(d.status = 'pending') > 0) DESC, MAX(d.patient_name) ASC";
+
     // Aggregate totals across ALL of this user's patients (for the KPI row),
     // independent of the current page and of any active search.
     const [[agg]] = await pool.query(
@@ -252,17 +278,18 @@ export async function listPatients(req, res, next) {
     );
     const total = Number(agg.totalPatients || 0); // overall (drives the KPI row)
 
-    // When searching, pagination reflects only the matching patients.
+    // When searching or filtering by status, pagination reflects only matching patients.
     let matchTotal = total;
-    if (search) {
+    if (search || statusHaving) {
       const [[fc]] = await pool.query(
         `SELECT COUNT(*) AS c FROM (
            SELECT d.patient_key
            FROM statement_dos d
            WHERE ${uidClause(req, 'd.user_id')} ${searchClause}
            GROUP BY d.patient_key
+           ${statusHaving}
          ) g`,
-        { userId, search: likeParam }
+        { userId, ...(likeParam ? { search: likeParam } : {}) }
       );
       matchTotal = Number(fc.c || 0);
     }
@@ -294,9 +321,8 @@ export async function listPatients(req, res, next) {
        FROM statement_dos d
        WHERE ${uidClause(req, 'd.user_id')} ${searchClause}
        GROUP BY d.patient_key
-       -- Pending-status patients (any pending DOS) always sort to the top; within each
-       -- group the existing order is kept (unverified addresses first, then by name).
-       ORDER BY (SUM(d.status = 'pending') > 0) DESC, addrValidated ASC, MAX(d.patient_name)
+       ${statusHaving}
+       ORDER BY ${orderBy}
        LIMIT ${pageSize} OFFSET ${offset}`,
       { userId, ...(likeParam ? { search: likeParam } : {}) }
     );

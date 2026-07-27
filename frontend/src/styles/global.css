@@ -414,6 +414,27 @@ input, button, select, textarea { font-family: inherit; }
   position: sticky; top: 0; z-index: 1;
 }
 .data-table thead th:last-child { border-right: none; }
+
+/* Sortable + filterable headers — sleek, on the navy header band. */
+.data-table thead th.th-sortable { vertical-align: top; }
+.th-sort {
+  display: inline-flex; align-items: center; gap: 7px; background: none; border: none; cursor: pointer;
+  color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; padding: 0; line-height: 1.25;
+  transition: color 0.14s;
+}
+.th-sort:hover { color: #ffffff; }
+.th-chev { font-size: 8.5px; opacity: 0.42; transition: opacity 0.14s, color 0.14s; line-height: 1; }
+.th-sort:hover .th-chev { opacity: 0.85; }
+.th-chev.on { opacity: 1; color: var(--copper2, #e0ab6f); font-size: 10px; }
+.data-table thead th.th-sortable.is-sorted { color: #ffffff; }
+.th-filter {
+  display: block; margin-top: 7px; width: 100%; cursor: pointer;
+  font-family: var(--sans); font-size: 10.5px; font-weight: 700; letter-spacing: 0.2px; text-transform: none;
+  color: #ffffff; background: rgba(255, 255, 255, 0.12); border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 6px; padding: 4px 8px; transition: background 0.14s, border-color 0.14s;
+}
+.th-filter:hover, .th-filter:focus { background: rgba(255, 255, 255, 0.2); border-color: var(--copper, #cf9455); outline: none; }
+.th-filter option { color: #0a0e18; background: #ffffff; }
 .data-table td {
   padding: 15px 16px; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border);
   font-weight: 600; font-size: 15px; color: #0a0e18; vertical-align: middle;
