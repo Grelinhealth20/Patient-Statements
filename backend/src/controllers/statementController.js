@@ -1,7 +1,7 @@
 import { getPool } from '../config/db.js';
 import { env } from '../config/env.js';
 import { writeAudit } from '../config/initDb.js';
-import { resolvePatientAddress, isAnyUspsConfigured, probeUsps, UspsValidationError } from '../utils/addressResolver.js';
+import { resolvePatientAddress, isAddressValidationConfigured, probeAddressValidation, AddressValidationError } from '../utils/addressResolver.js';
 import { recordApiCall, getMonthlyCallCount } from '../utils/apiUsage.js';
 import {
   isS3Configured,
@@ -492,7 +492,7 @@ export async function financialSummary(req, res, next) {
 /**
  * Lightweight roster of every patient with their address-validation state, used to
  * drive the "Verify All Addresses" batch. Returns each patient's key, name, whether
- * their address is already USPS-verified, and whether they have an address on file —
+ * their address is already validator-verified, and whether they have an address on file —
  * so the client can validate exactly the ones that still need it, one by one.
  * Unpaginated by design (it must cover every patient, not just the current page).
  */
@@ -563,12 +563,12 @@ export async function listPatientDos(req, res, next) {
 /* ------------------------------- POST /patients/:key/validate-address */
 
 /**
- * Validate one patient's mailing address with USPS (the sole validator) and, on
- * success, persist the standardized address across ALL of that patient's DOS rows so
- * every future statement uses the corrected address.
+ * Validate one patient's mailing address with Google Address Validation (the sole
+ * validator) and, on success, persist the standardized address across ALL of that
+ * patient's DOS rows so every future statement uses the corrected address.
  *
  * The existing patient address (patientAddress1 + patientAddress2) is the input.
- * USPS credentials stay server-side; the browser only sees the result.
+ * The Google API key stays server-side; the browser only sees the result.
  */
 export async function validatePatientAddress(req, res, next) {
   try {
@@ -601,11 +601,11 @@ export async function validatePatientAddress(req, res, next) {
       return res.status(400).json({ message: 'This patient has no address on file to validate.' });
     }
 
-    // Validate the address in real time. USPS is the sole source of truth; if it
+    // Validate the address in real time. Google is the sole source of truth; if it
     // cannot identify the address, resolvePatientAddress throws (handled below).
     const { validated, provider, apiStatus } = await resolvePatientAddress({ line1, line2 });
-    // Track this month's USPS validation volume (free; for visibility only).
-    await recordApiCall('usps_validation');
+    // Track this month's Google validation volume (billable SKU; for visibility).
+    await recordApiCall('google_validation');
     if (!validated.line1 && !validated.line2) {
       return res.status(422).json({ message: 'The address could not be validated.' });
     }
@@ -630,7 +630,7 @@ export async function validatePatientAddress(req, res, next) {
           l1: validated.line1,
           l2: validated.line2,
           validatedAt: new Date().toISOString(),
-          provider,                          // always 'usps'
+          provider,                          // always 'google'
           verdictText: validated.verdictText || '',
           userId,
           key,
@@ -662,45 +662,45 @@ export async function validatePatientAddress(req, res, next) {
         hasInferred: validated.hasInferred,
         verdictText: validated.verdictText,
       },
-      provider,             // always 'usps'
+      provider,             // always 'google'
       updatedRows,
       api: apiStatus,
     });
   } catch (err) {
-    // USPS validation failures carry a machine-readable code and a clear message.
+    // Address validation failures carry a machine-readable code and a clear message.
     // Surface them directly so the user sees exactly why the address didn't validate
-    // (not found, unconfirmed, insufficient input, USPS unavailable, etc.).
-    if (err instanceof UspsValidationError) {
+    // (not found, unconfirmed, insufficient input, validator unavailable, etc.).
+    if (err instanceof AddressValidationError) {
       const status = err.code === 'NOT_CONFIGURED' ? 503
         : err.code === 'INSUFFICIENT_INPUT' ? 400
           : (err.code === 'NOT_FOUND' || err.code === 'UNCONFIRMED') ? 422
             : err.code === 'TIMEOUT' ? 504
               : 502;
       return res.status(status).json({
-        message: uspsUserMessage(err),
+        message: addressValidationUserMessage(err),
         code: err.code || undefined,
-        provider: 'usps',
+        provider: 'google',
       });
     }
     next(err);
   }
 }
 
-/** Turn a USPS error code into a clear, user-facing sentence. */
-function uspsUserMessage(err) {
+/** Turn an address-validation error code into a clear, user-facing sentence. */
+function addressValidationUserMessage(err) {
   switch (err.code) {
     case 'NOT_FOUND':
-      return 'USPS could not find this address. Please check the street, city, state and ZIP and try again.';
+      return 'Google could not find this address. Please check the street, city, state and ZIP and try again.';
     case 'UNCONFIRMED':
-      return 'USPS could not confirm this address is deliverable. Please verify the details (including any apartment/suite).';
+      return 'Google could not confirm this address is deliverable. Please verify the details (including any apartment/suite).';
     case 'INSUFFICIENT_INPUT':
-      return 'Not enough address detail to validate. A street plus state and (city or ZIP) are required.';
+      return 'Not enough address detail to validate. Please provide a street plus city, state and/or ZIP.';
     case 'TIMEOUT':
-      return 'USPS address validation timed out. Please try again.';
+      return 'Google address validation timed out. Please try again.';
     case 'NOT_CONFIGURED':
-      return 'USPS address validation is not configured on the server.';
+      return 'Google address validation is not configured on the server.';
     default:
-      return err.message || 'USPS could not validate this address.';
+      return err.message || 'Google could not validate this address.';
   }
 }
 
@@ -708,11 +708,11 @@ function uspsUserMessage(err) {
 
 /**
  * Directly edit a patient's mailing address from the UI. The user-supplied lines are
- * run through USPS in real time and, on success, the STANDARDIZED address (properly
- * formatted, ZIP+4, DPV) is saved to every DOS row for the patient and marked
- * verified. If USPS cannot identify the edited address, the user's raw input is still
- * saved (so the edit is never lost) and the patient is marked unverified with a clear
- * note. Unlike the one-time Validate action, editing may be repeated.
+ * run through Google Address Validation in real time and, on success, the STANDARDIZED
+ * address (properly formatted, ZIP+4, DPV) is saved to every DOS row for the patient
+ * and marked verified. If Google cannot identify the edited address, the user's raw
+ * input is still saved (so the edit is never lost) and the patient is marked unverified
+ * with a clear note. Unlike the one-time Validate action, editing may be repeated.
  */
 export async function updatePatientAddress(req, res, next) {
   try {
@@ -733,25 +733,25 @@ export async function updatePatientAddress(req, res, next) {
     );
     if (!exists) return res.status(404).json({ message: 'Patient not found.' });
 
-    // Auto-format via USPS. On success save the standardized address + mark verified;
-    // on a USPS miss keep the raw edit so nothing is lost (unverified).
+    // Auto-format via Google. On success save the standardized address + mark verified;
+    // on a Google miss keep the raw edit so nothing is lost (unverified).
     let saved = { line1, line2 };
     let validated = false;
     let provider = null;
     let verdictText = null;
     let apiStatus = null;
-    let uspsError = null;
+    let validationError = null;
     try {
       const r = await resolvePatientAddress({ line1, line2 });
       saved = { line1: r.validated.line1, line2: r.validated.line2 };
       validated = true;
-      provider = r.provider;                 // 'usps'
+      provider = r.provider;                 // 'google'
       verdictText = r.validated.verdictText || '';
       apiStatus = r.apiStatus;
-      await recordApiCall('usps_validation');
+      await recordApiCall('google_validation');
     } catch (err) {
-      if (!(err instanceof UspsValidationError)) throw err;
-      uspsError = uspsUserMessage(err);       // keep the raw edit; save unverified
+      if (!(err instanceof AddressValidationError)) throw err;
+      validationError = addressValidationUserMessage(err);   // keep the raw edit; save unverified
     }
 
     // Persist to every DOS row for this patient, atomically.
@@ -799,10 +799,10 @@ export async function updatePatientAddress(req, res, next) {
       provider,
       verdictText,
       updatedRows,
-      uspsError,
+      validationError,
       message: validated
-        ? 'Address formatted by USPS and saved.'
-        : (uspsError ? `Saved your address. ${uspsError}` : 'Address saved (not USPS-verified).'),
+        ? 'Address formatted by Google and saved.'
+        : (validationError ? `Saved your address. ${validationError}` : 'Address saved (not verified).'),
       api: apiStatus,
     });
   } catch (err) {
@@ -813,34 +813,34 @@ export async function updatePatientAddress(req, res, next) {
 /* ------------------------------ GET /address-validation/status (live provider) */
 
 /**
- * Live address-validation provider status for the client pill/popup. USPS is the ONLY
- * validator; its health is probed live so the pill reflects what USPS is ACTUALLY
- * doing right now, never a fabricated state. USPS address validation is free of charge.
+ * Live address-validation provider status for the client pill/popup. Google Address
+ * Validation is the ONLY validator; its health is probed live so the pill reflects what
+ * the API is ACTUALLY doing right now, never a fabricated state. Google Address
+ * Validation is a billable Google Cloud SKU (with a monthly free allowance).
  */
 export async function addressValidationStatus(req, res, next) {
   try {
-    const uspsCalls = await getMonthlyCallCount('usps_validation').catch(() => null);
+    const callsThisMonth = await getMonthlyCallCount('google_validation').catch(() => null);
 
-    const health = isAnyUspsConfigured()
-      ? await probeUsps().catch((e) => ({ configured: true, healthy: false, reason: e.message }))
-      : { configured: false, healthy: false, reason: 'USPS is not configured.' };
+    const health = isAddressValidationConfigured()
+      ? await probeAddressValidation().catch((e) => ({ configured: true, healthy: false, reason: e.message }))
+      : { configured: false, healthy: false, reason: 'Google Address Validation is not configured.' };
 
     const api = {
-      provider: 'USPS Addresses API v3',
-      primary: 'usps',
-      uspsPath: 'v3',
+      provider: 'Google Address Validation API',
+      primary: 'google',
       configured: !!health.configured,
-      uspsHealthy: !!health.healthy,
+      healthy: !!health.healthy,
       live: !!health.healthy,
-      verdict: 'FREE',            // USPS address validation carries no per-call charge
-      planLabel: 'USPS — free (no per-call charge)',
-      uspsCallsThisMonth: uspsCalls,
+      verdict: 'LIVE',
+      planLabel: 'Google Address Validation (billable SKU)',
+      callsThisMonth,
       reason: health.healthy ? null : (health.reason || null),
       note: health.healthy
-        ? 'USPS is the sole address validator (free, real-time).'
+        ? 'Google Address Validation (with USPS CASS) is the sole address validator (real-time).'
         : (health.configured
-          ? `USPS is configured but not serving right now (${health.reason || 'unavailable'}).`
-          : 'USPS address validation is not configured on the server.'),
+          ? `Google Address Validation is configured but not serving right now (${health.reason || 'unavailable'}).`
+          : 'Google Address Validation is not configured on the server.'),
       checkedAt: health.checkedAt || new Date().toISOString(),
     };
 

@@ -270,31 +270,34 @@ const IconCheck = () => <Svg><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><pat
 const IconUpload = () => <Svg strokeWidth="1.7"><path d="M12 16V4M8 8l4-4 4 4" /><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" /></Svg>;
 const IconDollar = () => <Svg><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></Svg>;
 
-/** Human label for the address validator (USPS is the only provider). */
-function providerLabel() {
-  return 'USPS Address Validation';
+/**
+ * Human label for the address validator. Google is the current provider; existing
+ * records may still carry the legacy 'usps' provider, so both are mapped accurately.
+ */
+function providerLabel(provider) {
+  return provider === 'usps' ? 'USPS Address Validation' : 'Google Address Validation';
 }
-function providerShort() {
-  return 'USPS';
+function providerShort(provider) {
+  return provider === 'usps' ? 'USPS' : 'Google';
 }
 
-/** Build a descriptive tooltip for the USPS address-validation pill. */
+/** Build a descriptive tooltip for the address-validation pill. */
 function tierTitle(s) {
-  if (!s) return 'Checking USPS address validation…';
-  const parts = [`${s.provider || 'USPS Address Validation'} — real-time · free (no per-call charge)`];
-  if (s.uspsCallsThisMonth != null) parts.push(`${Number(s.uspsCallsThisMonth).toLocaleString()} validations this month`);
-  if (!s.uspsHealthy && s.reason) parts.push(`Not serving: ${s.reason}`);
+  if (!s) return 'Checking Google address validation…';
+  const parts = [`${s.provider || 'Google Address Validation'} — real-time`];
+  if (s.callsThisMonth != null) parts.push(`${Number(s.callsThisMonth).toLocaleString()} validations this month`);
+  if (!s.healthy && s.reason) parts.push(`Not serving: ${s.reason}`);
   return parts.join(' · ');
 }
 
-/** Live USPS address-validation pill: Free (serving) / Unavailable. */
+/** Live address-validation pill: Live (serving) / Unavailable. */
 function TierPill({ status }) {
   if (!status) {
     return <span className="tier-pill tier-loading" title={tierTitle(null)}>Checking…</span>;
   }
-  const healthy = !!status.uspsHealthy;
+  const healthy = !!status.healthy;
   const cls = healthy ? 'tier-free' : 'tier-unknown';
-  const label = healthy ? 'USPS · Free' : 'USPS · Unavailable';
+  const label = healthy ? 'Google · Live' : 'Google · Unavailable';
   return (
     <span className={`tier-pill ${cls}`} title={tierTitle(status)}>
       <span className="tier-dot" aria-hidden="true" />{label}
@@ -372,19 +375,19 @@ function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, d
               />
               <div className="addr-edit-actions">
                 <button className="btn-save-addr" onClick={saveEdit} disabled={saving || (!l1.trim() && !l2.trim())}
-                  title="Format with USPS and save">
+                  title="Format with Google and save">
                   {saving ? <span className="btn-inline"><Spinner dark /> Formatting & saving…</span> : <>✓ Save</>}
                 </button>
                 <button className="btn-cancel-addr" onClick={cancelEdit} disabled={saving} title="Discard changes">✕</button>
               </div>
-              <span className="addr-edit-hint">USPS will standardize the address automatically on save.</span>
+              <span className="addr-edit-hint">Google will standardize the address automatically on save.</span>
             </div>
           ) : (
             <>
               <AddressCell addr={p.patientAddress} />
               <div className="addr-actions">
                 <button className="btn-edit-addr" onClick={openEditor}
-                  title="Edit this patient's address — USPS formats & saves it automatically">
+                  title="Edit this patient's address — Google formats & saves it automatically">
                   <PencilIcon /> Edit
                 </button>
                 {p.addressValidated ? (
@@ -399,7 +402,7 @@ function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, d
                     className="btn-validate"
                     disabled={validating}
                     onClick={(e) => { e.stopPropagation(); onValidate(p.key); }}
-                    title="Validate & standardize this patient's address with USPS (free, real-time)."
+                    title="Validate & standardize this patient's address with Google (real-time)."
                   >
                     {validating
                       ? <span className="btn-inline"><Spinner dark /> Validating…</span>
@@ -494,31 +497,31 @@ function PatientRow({ p, ex, onToggle, onValidate, validating, onDownloadFile, d
 const nfmt = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
 
 /**
- * Real-time popup reporting live USPS address-validation status. USPS is the sole
- * validator and is free of charge; the DPV verdict and ZIP+4 come from the live call.
+ * Real-time popup reporting live Google address-validation status. Google (with USPS
+ * CASS) is the sole validator; the DPV verdict and ZIP+4 come from the live call.
  */
 function ApiStatusModal({ status, onClose }) {
   if (!status) return null;
-  const healthy = status.uspsHealthy != null ? !!status.uspsHealthy : (status.live !== false);
+  const healthy = status.healthy != null ? !!status.healthy : (status.live !== false);
   const cls = healthy ? 'v-free' : 'v-unknown';
-  const label = healthy ? 'USPS · FREE' : 'USPS · UNAVAILABLE';
+  const label = healthy ? 'Google · LIVE' : 'Google · UNAVAILABLE';
   const sub = healthy
-    ? 'Validated by USPS — free, no per-call charge'
-    : (status.reason || status.note || 'USPS is not serving right now');
+    ? 'Validated by Google Address Validation (with USPS CASS)'
+    : (status.reason || status.note || 'Google is not serving right now');
 
   const when = status.checkedAt ? new Date(status.checkedAt) : new Date();
   const whenStr = isNaN(when) ? '' : when.toLocaleString();
   const live = status.live ?? healthy;
 
   return (
-    <div className="api-modal-overlay" role="dialog" aria-modal="true" aria-label="USPS Address Validation status" onClick={onClose}>
+    <div className="api-modal-overlay" role="dialog" aria-modal="true" aria-label="Google Address Validation status" onClick={onClose}>
       <div className="api-modal" onClick={(e) => e.stopPropagation()}>
         <button className="api-modal-x" onClick={onClose} aria-label="Close">×</button>
         <div className="api-modal-head">
           <span className={`api-live-dot${live ? ' on' : ''}`} aria-hidden="true" />
           <div>
-            <h3>USPS Address Validation</h3>
-            <p className="api-modal-provider">{status.provider || 'USPS Addresses API v3'}</p>
+            <h3>Google Address Validation</h3>
+            <p className="api-modal-provider">{status.provider || 'Google Address Validation API'}</p>
           </div>
         </div>
 
@@ -529,12 +532,12 @@ function ApiStatusModal({ status, onClose }) {
         </div>
 
         <dl className="api-facts">
-          <div><dt>Provider</dt><dd>{status.provider || 'USPS Address Validation'}</dd></div>
-          <div><dt>Cost</dt><dd>Free — no per-call charge</dd></div>
+          <div><dt>Provider</dt><dd>{status.provider || 'Google Address Validation'}</dd></div>
+          <div><dt>Plan</dt><dd>{status.planLabel || 'Google Address Validation (billable SKU)'}</dd></div>
           <div><dt>Mode</dt><dd>{live ? 'Live · real-time' : 'Offline'}</dd></div>
           {status.dpv && <div><dt>USPS DPV</dt><dd className="mono">{status.dpv}</dd></div>}
           {status.zipPlus4 != null && <div><dt>ZIP+4</dt><dd>{status.zipPlus4 ? 'Appended' : 'Not available'}</dd></div>}
-          {status.uspsCallsThisMonth != null && <div><dt>Validations this month</dt><dd>{nfmt(status.uspsCallsThisMonth)}</dd></div>}
+          {status.callsThisMonth != null && <div><dt>Validations this month</dt><dd>{nfmt(status.callsThisMonth)}</dd></div>}
           {whenStr && <div><dt>Checked</dt><dd>{whenStr}</dd></div>}
         </dl>
 
@@ -547,10 +550,10 @@ function ApiStatusModal({ status, onClose }) {
 
 /**
  * "Verify All Addresses" batch popup. Loads the full patient roster, then validates
- * every not-yet-verified address via USPS in real time (a small concurrency pool so
+ * every not-yet-verified address via Google in real time (a small concurrency pool so
  * many run "one by one" without hammering the API), with a live animated progress
  * bar and running success/failure counts. On completion it refreshes the table so
- * addresses that could NOT be validated sort to the top. All calls are real USPS
+ * addresses that could NOT be validated sort to the top. All calls are real Google
  * validations through the existing endpoint — no mock data.
  */
 function VerifyAllModal({ onClose, onDone }) {
@@ -620,7 +623,7 @@ function VerifyAllModal({ onClose, onDone }) {
             <h3>Verify All Patient Addresses</h3>
             <p className="api-modal-provider">
               {phase === 'loading' && 'Loading patients…'}
-              {running && `Validating with USPS · ${processed} of ${total}`}
+              {running && `Validating with Google · ${processed} of ${total}`}
               {phase === 'done' && 'Validation complete'}
               {phase === 'empty' && 'Nothing to validate'}
               {phase === 'error' && 'Could not start'}
@@ -829,7 +832,7 @@ function CombineModal({ statement, onClose, onDone }) {
 function GenerateAllModal({ onClose, onDone, onVerifyFirst }) {
   const [phase, setPhase] = useState('loading'); // loading | confirm | running | done | empty | error
   const [pendingCount, setPendingCount] = useState(0);
-  const [unverifiedCount, setUnverifiedCount] = useState(0); // pending patients with unverified USPS address
+  const [unverifiedCount, setUnverifiedCount] = useState(0); // pending patients with unverified address
   const [stats, setStats] = useState({ total: 0, processed: 0, ok: 0, failed: 0 });
   const [current, setCurrent] = useState('');
   const [failedList, setFailedList] = useState([]);
@@ -841,7 +844,7 @@ function GenerateAllModal({ onClose, onDone, onVerifyFirst }) {
   const queueRef = useRef([]);
   const startedRef = useRef(false); // the batch may start once, and only on an explicit click
 
-  // Opening the popup ONLY loads the pending patients (and their USPS address state) to
+  // Opening the popup ONLY loads the pending patients (and their address-validation state) to
   // show a confirmation. Nothing is generated here — generation happens solely when the
   // user clicks "Generate All" inside this popup (startBatch), so a statement run can
   // never be triggered automatically (e.g. on mount, refresh, or a StrictMode re-render).
@@ -855,7 +858,7 @@ function GenerateAllModal({ onClose, onDone, onVerifyFirst }) {
         if (!alive) return;
         queueRef.current = queue;
         setPendingCount(queue.length);
-        // Count how many of those have an address USPS hasn't verified yet, so we can
+        // Count how many of those have an address not yet verified, so we can
         // prompt the user to run "Verify All Addresses" first.
         try {
           const { patients: addr } = await statementsApi.addressQueue();
@@ -996,7 +999,7 @@ function GenerateAllModal({ onClose, onDone, onVerifyFirst }) {
             </p>
             {unverifiedCount > 0 && (
               <div className="alert alert-warn" role="alert" style={{ margin: '10px 0 0' }}>
-                <strong>{unverifiedCount}</strong> of these {unverifiedCount === 1 ? 'patients has an address' : 'patients have addresses'} not yet verified with USPS. Verify addresses first so statements carry the correct standardized address.
+                <strong>{unverifiedCount}</strong> of these {unverifiedCount === 1 ? 'patients has an address' : 'patients have addresses'} not yet verified with Google. Verify addresses first so statements carry the correct standardized address.
               </div>
             )}
             <p className="va-note" style={{ margin: '10px 0 0' }}>Nothing runs automatically — statements are generated only when you click <strong>Generate All</strong> below.</p>
@@ -1065,7 +1068,7 @@ function GenerateAllModal({ onClose, onDone, onVerifyFirst }) {
             <>
               <button className="btn-secondary" onClick={close}>Cancel</button>
               {unverifiedCount > 0 && onVerifyFirst && (
-                <button className="btn-secondary" onClick={() => { onVerifyFirst(); onClose(); }} title="Validate all patient addresses with USPS first">
+                <button className="btn-secondary" onClick={() => { onVerifyFirst(); onClose(); }} title="Validate all patient addresses with Google first">
                   <ShieldCheckIcon /> Verify Addresses First
                 </button>
               )}
@@ -1407,18 +1410,18 @@ export default function StatementHome() {
     }
   }, [push, refresh]);
 
-  // Validate one patient's address via USPS, persist the standardized result,
+  // Validate one patient's address via Google, persist the standardized result,
   // then refresh so the table (and any open DOS drawer) shows the updated address.
   const onValidate = useCallback(async (key) => {
     if (!key) return;
     setValidating(key);
     try {
       const { validated, api } = await statementsApi.validateAddress(key);
-      // Show the live USPS status popup, and refresh the Tier pill from the live probe.
+      // Show the live Google status popup, and refresh the Tier pill from the live probe.
       if (api) setApiStatus(api);
       statementsApi.addressValidationStatus().then((d) => d.api && setTierStatus(d.api)).catch(() => {});
       push(
-        `Address ${validated.complete ? 'confirmed' : 'updated'} via USPS: ${validated.formatted}`,
+        `Address ${validated.complete ? 'confirmed' : 'updated'} via Google: ${validated.formatted}`,
         validated.complete ? 'success' : 'info'
       );
       await refresh();
@@ -1430,16 +1433,16 @@ export default function StatementHome() {
         return { ...prev, [key]: { ...prev[key], loading: true } };
       });
     } catch (err) {
-      // USPS failures return a clear message (and provider:'usps'); surface it.
+      // Google failures return a clear message (and provider:'google'); surface it.
       const api = err?.response?.data?.api;
       if (api) setApiStatus(api);
-      push(err?.response?.data?.message || 'USPS could not validate this address.', 'error');
+      push(err?.response?.data?.message || 'Google could not validate this address.', 'error');
     } finally {
       setValidating('');
     }
   }, [push, refresh]);
 
-  // Save a directly-edited patient address: the backend auto-formats it with USPS and
+  // Save a directly-edited patient address: the backend auto-formats it with Google and
   // persists it across all of the patient's DOS rows. Returns true on success so the
   // row can close its editor. Refreshes the table (and any open drawer) afterward.
   const onSaveAddress = useCallback(async (key, line1, line2) => {
@@ -1714,7 +1717,7 @@ export default function StatementHome() {
               className="btn-verify-all"
               onClick={() => setVerifyAllOpen(true)}
               disabled={!totals.patients}
-              title="Validate every patient's address with USPS, one by one. Unverified addresses move to the top."
+              title="Validate every patient's address with Google, one by one. Unverified addresses move to the top."
             >
               <ShieldCheckIcon /> Verify All Addresses
             </button>

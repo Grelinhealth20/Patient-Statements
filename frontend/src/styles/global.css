@@ -470,7 +470,9 @@ input, button, select, textarea { font-family: inherit; }
   color: var(--green); background: var(--green-soft); border: 1px solid #b7e3cb; white-space: nowrap;
 }
 .addr-verified svg { width: 13px; height: 13px; }
-/* USPS-verified accent. */
+/* Validator-verified accents. Google is the current provider; 'usps' may appear on
+   legacy records validated before the switch. */
+.addr-verified.prov-google { color: #1a73e8; background: #e8f0fe; border-color: #c6dafc; }
 .addr-verified.prov-usps { color: #0b4da2; background: #e8f1fc; border-color: #b9d6f5; }
 
 /* Address action row: Edit + Validate/Verified sit together under the address. */

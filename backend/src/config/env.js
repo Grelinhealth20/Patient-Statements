@@ -40,14 +40,18 @@ export const env = {
     name: process.env.SUPER_ADMIN_NAME || 'Super Administrator',
   },
 
-  // USPS Addresses v3 API — the SOLE address validator (source of truth for US mail).
-  // OAuth2 client_credentials with a Consumer Key (clientId) + Consumer Secret
-  // (clientSecret) from developer.usps.com, scope "addresses". Server-side only; no
-  // other address-validation API is used anywhere in the app.
-  usps: {
-    clientId: process.env.USPS_CLIENT_ID || '',
-    clientSecret: process.env.USPS_CLIENT_SECRET || '',
-    apiBase: process.env.USPS_API_BASE || 'https://apis.usps.com',
+  // Google Cloud Address Validation API — the SOLE address validator (source of truth
+  // for US mail). Authenticated with a single Google API key, server-side only; no
+  // other address-validation API is used anywhere in the app. Supply the key via
+  // GOOGLE_ADDRESS_VALIDATION_API_KEY (or GOOGLE_API_KEY) in the environment
+  // (backend/.env locally, or a project secret in production). The key must be
+  // restricted to the Address Validation API. No secret is committed to source.
+  google: {
+    apiKey:
+      process.env.GOOGLE_ADDRESS_VALIDATION_API_KEY ||
+      process.env.GOOGLE_API_KEY ||
+      '',
+    apiBase: process.env.GOOGLE_ADDRESS_VALIDATION_BASE || 'https://addressvalidation.googleapis.com',
   },
 
   s3: {

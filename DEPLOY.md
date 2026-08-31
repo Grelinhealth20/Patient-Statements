@@ -73,8 +73,8 @@ Set these in **Settings → Environment Variables** for **Production** and
 | `SUPER_ADMIN_EMAIL` | `admin@grelinhealth.com` |
 | `SUPER_ADMIN_PASSWORD` | `<your-admin-password>` |
 | `SUPER_ADMIN_NAME` | `Super Administrator` |
-| `USPS_CLIENT_ID` | `<usps-consumer-key>` *(address validator — USPS APIs v3 OAuth)* |
-| `USPS_CLIENT_SECRET` | `<usps-consumer-secret>` *(address validator — USPS APIs v3 OAuth)* |
+| `GOOGLE_ADDRESS_VALIDATION_API_KEY` | `<google-api-key>` *(address validator — Google Cloud Address Validation API; `GOOGLE_API_KEY` also accepted)* |
+| `GOOGLE_ADDRESS_VALIDATION_BASE` | `https://addressvalidation.googleapis.com` *(optional; API base override)* |
 | `AWS_ACCESS_KEY_ID` | `<your-aws-access-key>` *(omit to use an IAM role)* |
 | `AWS_SECRET_ACCESS_KEY` | `<your-aws-secret-key>` *(omit to use an IAM role)* |
 | `S3_REGION` | `us-east-1` |
@@ -90,16 +90,19 @@ Set these in **Settings → Environment Variables** for **Production** and
 > credential provider chain is used. If the bucket is not configured, generation
 > still works and PDFs download locally (archival is simply skipped).
 
-> **Address validation (USPS only).** USPS is the **sole** validator — free and
-> real-time. The app mints an OAuth2 access token from `USPS_CLIENT_ID` +
-> `USPS_CLIENT_SECRET` (Consumer Key/Secret from developer.usps.com, scope
-> `addresses`) and calls `GET /addresses/v3/address` on `apis.usps.com`. An exact
-> match returns the standardized line + ZIP+4 + DPV, which is written to the DB and
-> recorded in the audit log. The token is cached and auto-regenerated before expiry
-> (with a one-retry safety net on 401). If USPS cannot identify an address, the user
-> gets a clear USPS message — there is no fallback. The USPS Addresses v3 API is the
-> **sole** address validator; no other address API is used. USPS address validation
-> carries **no per-call charge**.
+> **Address validation (Google only).** The **Google Cloud Address Validation API**
+> is the **sole** validator — real-time, server-side. The app calls
+> `POST /v1:validateAddress?key=…` on `addressvalidation.googleapis.com` with
+> `enableUspsCass: true`, so the response carries the USPS CASS standardized address
+> (line + ZIP+4) and DPV confirmation alongside Google's own verdict. On a confirmed
+> match the standardized address is written to the DB and recorded in the audit log.
+> The API key is read from `GOOGLE_ADDRESS_VALIDATION_API_KEY` (or `GOOGLE_API_KEY`)
+> and stays server-side — it never reaches the browser. If Google cannot identify an
+> address, the user gets a clear message — there is no fallback. **Billing:** the
+> Address Validation API is a **billable** Google Cloud SKU (it has a monthly free
+> allowance, then a per-call charge) — enable billing on the Google Cloud project and
+> restrict the key to the Address Validation API. Restrict the key to the Address
+> Validation API and rotate the bundled default key before going live.
 
 > Generate fresh JWT secrets for a real production deploy:
 > `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`

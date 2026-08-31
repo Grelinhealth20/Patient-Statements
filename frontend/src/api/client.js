@@ -97,7 +97,7 @@ export const statementsApi = {
   patientDos: (key) => api.get(`/statements/patients/${encodeURIComponent(key)}/dos`).then((r) => r.data),
   validateAddress: (key) =>
     api.post(`/statements/patients/${encodeURIComponent(key)}/validate-address`).then((r) => r.data),
-  // Edit a patient's address directly; USPS auto-formats it and it is saved.
+  // Edit a patient's address directly; Google auto-formats it and it is saved.
   updateAddress: (key, line1, line2) =>
     api.put(`/statements/patients/${encodeURIComponent(key)}/address`, { line1, line2 }).then((r) => r.data),
   // Live free-tier / SKU usage status for the Address Validation API.
