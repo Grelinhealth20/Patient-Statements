@@ -54,6 +54,22 @@ export const env = {
     apiBase: process.env.GOOGLE_ADDRESS_VALIDATION_BASE || 'https://addressvalidation.googleapis.com',
   },
 
+  // PHI-at-rest encryption. Patient records (names, addresses, DOB, financials,
+  // clinical DOS detail) are encrypted with AES-256-GCM before they are written to
+  // the database and decrypted transparently on read. PHI_ENCRYPTION_KEY is a base64
+  // encoding of 32 random bytes (a 256-bit key); generate one with:
+  //   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+  // Keep it in the environment / a secret manager — NEVER in source or the repo.
+  // Losing the key makes existing PHI unrecoverable. PHI_ENCRYPTION_KEYS_OLD is an
+  // optional comma-separated list of retired keys, kept only so data written under a
+  // previous key can still be decrypted during a key rotation.
+  // Required — the app refuses to boot without a PHI key, so PHI is never handled or
+  // stored without encryption (no plaintext fallback).
+  security: {
+    phiKey: required('PHI_ENCRYPTION_KEY'),
+    phiKeysOld: process.env.PHI_ENCRYPTION_KEYS_OLD || '',
+  },
+
   s3: {
     // Durable storage for generated statement PDFs. All values are server-side
     // only; credentials are never exposed to the browser. When accessKeyId /

@@ -3,6 +3,7 @@ import { env } from '../config/env.js';
 import { writeAudit } from '../config/initDb.js';
 import { resolvePatientAddress, isAddressValidationConfigured, probeAddressValidation, AddressValidationError } from '../utils/addressResolver.js';
 import { recordApiCall, getMonthlyCallCount } from '../utils/apiUsage.js';
+import { packData, unpackData, phiHelperColumns } from '../utils/crypto.js';
 import {
   isS3Configured,
   buildStatementKey,
@@ -150,6 +151,9 @@ export async function importRows(req, res, next) {
       const uniq = `${pKey}|${dKey}`;
       if (seen.has(uniq)) continue;
       seen.add(uniq);
+      // The full imported row is PHI — encrypt it at rest (packData). The non-PHI
+      // helper columns are derived from the same row so SQL never reads the ciphertext.
+      const helpers = phiHelperColumns(row);
       values.push([
         userId,
         s(row.accountNumber).slice(0, 64),
@@ -158,8 +162,11 @@ export async function importRows(req, res, next) {
         pKey.slice(0, 160),
         s(row.dateOfService || row.statementDate).slice(0, 80),
         dKey.slice(0, 80),
-        JSON.stringify(row),
+        packData(row),
         fileName.slice(0, 255),
+        helpers.avProvider,
+        helpers.hasPatientAddress,
+        helpers.patientResponsibility,
       ]);
     }
 
@@ -175,7 +182,8 @@ export async function importRows(req, res, next) {
       const chunk = values.slice(i, i + INSERT_CHUNK);
       const [result] = await pool.query(
         `INSERT IGNORE INTO statement_dos
-           (user_id, account_number, patient_name, patient_dob, patient_key, dos_date, dos_key, data, source_file)
+           (user_id, account_number, patient_name, patient_dob, patient_key, dos_date, dos_key, data, source_file,
+            av_provider, has_patient_address, patient_responsibility)
          VALUES ?`,
         [chunk]
       );
@@ -316,8 +324,7 @@ export async function listPatients(req, res, next) {
          COUNT(*)                                        AS dosCount,
          SUM(d.status = 'pending')                       AS pendingCount,
          SUM(d.status = 'generated')                     AS generatedCount,
-         MAX(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(d.data, '$.addressValidationProvider')) IN ('usps','google')
-                  THEN 1 ELSE 0 END)                     AS addrValidated
+         MAX(CASE WHEN d.av_provider IN ('usps','google') THEN 1 ELSE 0 END) AS addrValidated
        FROM statement_dos d
        WHERE ${uidClause(req, 'd.user_id')} ${searchClause}
        GROUP BY d.patient_key
@@ -364,7 +371,7 @@ export async function listPatients(req, res, next) {
       { userId, ...keyParams }
     );
     const sample = new Map(
-      sampleRows.map((r) => [r.patientKey, typeof r.data === 'string' ? JSON.parse(r.data) : r.data])
+      sampleRows.map((r) => [r.patientKey, unpackData(r.data)])
     );
 
     const patients = rows.map((r) => {
@@ -446,15 +453,11 @@ export async function listPendingPatients(req, res, next) {
  * Patient Responsibility across all of this user's dates of service, computed by
  * summing the `patientResponsibility` amount stored on each DOS.
  *
- * Amounts are stored as free-form strings (e.g. "$23.85 "), so each value is stripped
- * of everything except digits, a decimal point and a leading minus — exactly matching
- * the client's money() parser — then summed in the database (fast, exact, no rounding
- * drift). Nothing is fabricated: rows with no amount contribute nothing. Recomputed on
- * every call, so it is always current with the imported data.
- *
- * NOTE: the cleaned value is wrapped in CONCAT('', …) before CAST — casting a
- * REGEXP_REPLACE result straight to DECIMAL drops the fraction in MySQL 8, so this
- * forces a fresh string and preserves the cents (verified against an independent sum).
+ * The outstanding amount is summed from the `patient_responsibility` helper column,
+ * which is derived from each row's (now-encrypted) `data.patientResponsibility` on
+ * write using the exact same parser as the client's money() — so the DB sum is fast and
+ * exact and never has to read the encrypted PHI blob. Rows with no amount contribute
+ * nothing. Recomputed on every call, so it is always current with the imported data.
  */
 export async function financialSummary(req, res, next) {
   try {
@@ -462,15 +465,9 @@ export async function financialSummary(req, res, next) {
     const pool = getPool();
     const [[row]] = await pool.query(
       `SELECT
-         COALESCE(SUM(
-           CAST(CONCAT('', NULLIF(REGEXP_REPLACE(
-             JSON_UNQUOTE(JSON_EXTRACT(data, '$.patientResponsibility')), '[^0-9.-]', ''
-           ), '')) AS DECIMAL(18,2))
-         ), 0) AS outstanding,
+         COALESCE(SUM(patient_responsibility), 0) AS outstanding,
          COUNT(*) AS dosCount,
-         COALESCE(SUM(
-           JSON_UNQUOTE(JSON_EXTRACT(data, '$.patientResponsibility')) REGEXP '[0-9]'
-         ), 0) AS dosWithAmount
+         COALESCE(SUM(patient_responsibility IS NOT NULL), 0) AS dosWithAmount
        FROM statement_dos
        WHERE ${uidClause(req)}`,
       { userId }
@@ -502,11 +499,8 @@ export async function addressQueue(req, res, next) {
     const [rows] = await pool.query(
       `SELECT d.patient_key AS \`key\`,
               MAX(d.patient_name) AS patientName,
-              MAX(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(d.data, '$.addressValidationProvider')) IN ('usps','google')
-                       THEN 1 ELSE 0 END) AS validated,
-              MAX(CASE WHEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT(d.data, '$.patientAddress1')), '') <> ''
-                         OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(d.data, '$.patientAddress2')), '') <> ''
-                       THEN 1 ELSE 0 END) AS hasAddress
+              MAX(CASE WHEN d.av_provider IN ('usps','google') THEN 1 ELSE 0 END) AS validated,
+              MAX(d.has_patient_address) AS hasAddress
        FROM statement_dos d
        WHERE ${uidClause(req, 'd.user_id')}
        GROUP BY d.patient_key
@@ -552,12 +546,52 @@ export async function listPatientDos(req, res, next) {
       statementId: r.statementId,
       sourceFile: r.sourceFile || '',
       createdAt: r.createdAt,
-      data: typeof r.data === 'string' ? JSON.parse(r.data) : r.data,
+      data: unpackData(r.data),
     }));
     return res.json({ dos });
   } catch (err) {
     next(err);
   }
+}
+
+/**
+ * Apply a partial patch to the (encrypted) `data` of EVERY DOS row for one patient,
+ * transactionally. Because `data` is now AES-encrypted and opaque to SQL, each row is
+ * read, decrypted, shallow-merged with `patch`, re-encrypted and written back together
+ * with the derived non-PHI helper columns — the encrypted equivalent of the previous
+ * single `JSON_SET` UPDATE. Every row is patched so all future statements use the
+ * corrected values. Returns the number of rows updated.
+ */
+async function applyPatientDataPatch(req, key, patch) {
+  const pool = getPool();
+  const userId = req.user.id;
+  const conn = await pool.getConnection();
+  let updated = 0;
+  try {
+    await conn.beginTransaction();
+    const [rows] = await conn.query(
+      `SELECT id, data FROM statement_dos WHERE ${uidClause(req)} AND patient_key = :key FOR UPDATE`,
+      { userId, key }
+    );
+    for (const row of rows) {
+      const obj = { ...unpackData(row.data), ...patch };
+      const h = phiHelperColumns(obj);
+      await conn.query(
+        `UPDATE statement_dos
+            SET data = :data, av_provider = :av, has_patient_address = :ha, patient_responsibility = :pr
+          WHERE id = :id`,
+        { data: packData(obj), av: h.avProvider, ha: h.hasPatientAddress, pr: h.patientResponsibility, id: row.id }
+      );
+      updated += 1;
+    }
+    await conn.commit();
+  } catch (err) {
+    try { await conn.rollback(); } catch { /* ignore */ }
+    throw err;
+  } finally {
+    conn.release();
+  }
+  return updated;
 }
 
 /* ------------------------------- POST /patients/:key/validate-address */
@@ -586,7 +620,7 @@ export async function validatePatientAddress(req, res, next) {
     );
     if (!rows.length) return res.status(404).json({ message: 'Patient not found.' });
 
-    const data = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+    const data = unpackData(rows[0].data);
 
     // Address validation is a one-time action per patient. If it has already run,
     // reject re-validation so it can never be triggered twice for the same patient.
@@ -610,45 +644,22 @@ export async function validatePatientAddress(req, res, next) {
       return res.status(422).json({ message: 'The address could not be validated.' });
     }
 
-    // Persist the standardized address to every DOS row for this patient in one
-    // atomic UPDATE. A dedicated connection is opened for the transaction and is
-    // always released back to the pool, even on error.
-    const conn = await pool.getConnection();
-    let updatedRows = 0;
-    try {
-      await conn.beginTransaction();
-      const [result] = await conn.query(
-        `UPDATE statement_dos
-            SET data = JSON_SET(data,
-                  '$.patientAddress1', :l1,
-                  '$.patientAddress2', :l2,
-                  '$.addressValidated', :validatedAt,
-                  '$.addressValidationProvider', :provider,
-                  '$.addressValidationVerdict', :verdictText)
-          WHERE ${uidClause(req)} AND patient_key = :key`,
-        {
-          l1: validated.line1,
-          l2: validated.line2,
-          validatedAt: new Date().toISOString(),
-          provider,                          // always 'google'
-          verdictText: validated.verdictText || '',
-          userId,
-          key,
-        }
-      );
-      updatedRows = result.affectedRows || 0;
-      await conn.commit();
-    } catch (err) {
-      try { await conn.rollback(); } catch { /* ignore */ }
-      throw err;
-    } finally {
-      conn.release();
-    }
+    // Persist the standardized address to every DOS row for this patient (encrypted
+    // read-modify-write, transactional). Every future statement uses the corrected
+    // address and is marked validated with the provider + verdict.
+    const updatedRows = await applyPatientDataPatch(req, key, {
+      patientAddress1: validated.line1,
+      patientAddress2: validated.line2,
+      addressValidated: new Date().toISOString(),
+      addressValidationProvider: provider,   // always 'google'
+      addressValidationVerdict: validated.verdictText || '',
+    });
 
     await writeAudit({
       actorId: userId,
       action: 'statements.validateAddress',
-      detail: `patient=${key} provider=${provider} rows=${updatedRows} before="${inputLines.join(', ')}" after="${validated.formatted}"`,
+      // No raw PHI (addresses) in the audit log — record only non-identifying metadata.
+      detail: `patient=${key} provider=${provider} rows=${updatedRows} complete=${validated.complete}`,
     });
 
     return res.json({
@@ -754,43 +765,21 @@ export async function updatePatientAddress(req, res, next) {
       validationError = addressValidationUserMessage(err);   // keep the raw edit; save unverified
     }
 
-    // Persist to every DOS row for this patient, atomically.
-    const conn = await pool.getConnection();
-    let updatedRows = 0;
-    try {
-      await conn.beginTransaction();
-      const [result] = await conn.query(
-        `UPDATE statement_dos
-            SET data = JSON_SET(data,
-                  '$.patientAddress1', :l1,
-                  '$.patientAddress2', :l2,
-                  '$.addressValidated', :validatedAt,
-                  '$.addressValidationProvider', :provider,
-                  '$.addressValidationVerdict', :verdictText)
-          WHERE ${uidClause(req)} AND patient_key = :key`,
-        {
-          l1: saved.line1,
-          l2: saved.line2,
-          validatedAt: validated ? new Date().toISOString() : null,
-          provider: validated ? provider : null,
-          verdictText: validated ? verdictText : null,
-          userId,
-          key,
-        }
-      );
-      updatedRows = result.affectedRows || 0;
-      await conn.commit();
-    } catch (err) {
-      try { await conn.rollback(); } catch { /* ignore */ }
-      throw err;
-    } finally {
-      conn.release();
-    }
+    // Persist to every DOS row for this patient (encrypted read-modify-write). On a
+    // Google miss the raw edit is still saved (marked unverified) so nothing is lost.
+    const updatedRows = await applyPatientDataPatch(req, key, {
+      patientAddress1: saved.line1,
+      patientAddress2: saved.line2,
+      addressValidated: validated ? new Date().toISOString() : null,
+      addressValidationProvider: validated ? provider : null,
+      addressValidationVerdict: validated ? verdictText : null,
+    });
 
     await writeAudit({
       actorId: userId,
       action: 'statements.editAddress',
-      detail: `patient=${key} rows=${updatedRows} validated=${validated} saved="${[saved.line1, saved.line2].filter(Boolean).join(', ')}"`,
+      // No raw PHI (addresses) in the audit log — record only non-identifying metadata.
+      detail: `patient=${key} rows=${updatedRows} validated=${validated}`,
     });
 
     return res.json({
@@ -908,7 +897,7 @@ export async function generateStatement(req, res, next) {
     // DOS), not necessarily the caller — so a super admin generating on behalf of a
     // user keeps ownership/visibility consistent for everyone.
     const ownerId = sample.user_id;
-    const sampleData = typeof sample.data === 'string' ? JSON.parse(sample.data) : sample.data;
+    const sampleData = unpackData(sample.data);
     const officeName = s(sampleData?.officeName);
 
     // Sequence number = how many statements this patient already has + 1.
@@ -923,7 +912,7 @@ export async function generateStatement(req, res, next) {
     // this statement. No patient name is included.
     const dosDates = pending
       .map((r) => {
-        const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+        const d = unpackData(r.data);
         return parseDate(r.dos_date) || parseDate(d?.dateOfService);
       })
       .filter(Boolean)
@@ -968,10 +957,11 @@ export async function generateStatement(req, res, next) {
       actorId: userId,
       action: 'statements.generate',
       targetId: statementId,
-      detail: `patient=${patientName || accountNumber} dos=${pending.length} file=${fileName}`,
+      // Use the patient key (not the name) to avoid writing PHI into the audit log.
+      detail: `patient=${key} dos=${pending.length} file=${fileName}`,
     });
 
-    const rows = pending.map((r) => (typeof r.data === 'string' ? JSON.parse(r.data) : r.data));
+    const rows = pending.map((r) => unpackData(r.data));
     return res.json({ statement: { ...stmtRow, storageEnabled: isS3Configured() }, rows });
   } catch (err) {
     // Only roll back + release if we haven't already committed and released.

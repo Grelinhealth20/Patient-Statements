@@ -1,12 +1,19 @@
 import bcrypt from 'bcryptjs';
 import { getPool } from './db.js';
 import { env } from './env.js';
+import { isPhiEncryptionConfigured } from '../utils/crypto.js';
+import { backfillPhiEncryption } from './phiBackfill.js';
 
 /**
  * Creates every table the application needs, if it is not already present.
  * Idempotent — safe to run on every boot.
  */
 export async function initSchema() {
+  // Fail fast (no plaintext fallback): a valid 256-bit PHI key MUST be present before we
+  // touch any patient data, so PHI is never read/written without encryption available.
+  if (!isPhiEncryptionConfigured()) {
+    throw new Error('PHI_ENCRYPTION_KEY is missing or not a base64 32-byte key — refusing to start.');
+  }
   const pool = getPool();
 
   await pool.query(`
@@ -123,7 +130,48 @@ export async function initSchema() {
     { name: 'patient_dob', ddl: "ADD COLUMN patient_dob VARCHAR(40) NOT NULL DEFAULT '' AFTER patient_name" },
   ]);
 
+  // PHI-at-rest migration. The `data` column now holds an AES-256-GCM ciphertext token
+  // (not queryable JSON), so the few non-PHI facts SQL needs are promoted to dedicated
+  // columns and kept in sync on every write. This preserves search, the validated /
+  // has-address flags and the financial summary WITHOUT reading into the encrypted blob.
+  await ensureColumns('statement_dos', [
+    { name: 'av_provider', ddl: 'ADD COLUMN av_provider VARCHAR(16) NULL AFTER status' },
+    { name: 'has_patient_address', ddl: 'ADD COLUMN has_patient_address TINYINT(1) NOT NULL DEFAULT 0 AFTER av_provider' },
+    { name: 'patient_responsibility', ddl: 'ADD COLUMN patient_responsibility DECIMAL(14,2) NULL AFTER has_patient_address' },
+  ]);
+  // Widen `data` from JSON to LONGTEXT so it can hold the ciphertext token. MySQL
+  // converts existing JSON rows to their canonical JSON text (no data loss); the reader
+  // (unpackData) still parses that legacy text until the backfill encrypts it.
+  await ensureDataColumnIsText();
+
   await seedSuperAdmin();
+
+  // Encrypt any existing (or newly imported, pre-key) plaintext rows in the background.
+  // Runs only when a key is configured; reads stay backward-compatible while it works,
+  // so it never blocks boot and callers never see a half-migrated row incorrectly.
+  if (isPhiEncryptionConfigured()) {
+    backfillPhiEncryption().catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error('[phi] background backfill error:', err.message);
+    });
+  }
+}
+
+/**
+ * Ensure statement_dos.data is LONGTEXT (it started life as JSON). Idempotent: checks
+ * information_schema and only ALTERs when the column is still JSON, so it is safe to run
+ * on every boot and a no-op once migrated.
+ */
+async function ensureDataColumnIsText() {
+  const pool = getPool();
+  const [[col]] = await pool.query(
+    `SELECT DATA_TYPE AS type
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'statement_dos' AND COLUMN_NAME = 'data'`
+  );
+  if (col && String(col.type).toLowerCase() === 'json') {
+    await pool.query('ALTER TABLE `statement_dos` MODIFY COLUMN `data` LONGTEXT NOT NULL');
+  }
 }
 
 /**

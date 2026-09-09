@@ -75,6 +75,8 @@ Set these in **Settings → Environment Variables** for **Production** and
 | `SUPER_ADMIN_NAME` | `Super Administrator` |
 | `GOOGLE_ADDRESS_VALIDATION_API_KEY` | `<google-api-key>` *(address validator — Google Cloud Address Validation API; `GOOGLE_API_KEY` also accepted)* |
 | `GOOGLE_ADDRESS_VALIDATION_BASE` | `https://addressvalidation.googleapis.com` *(optional; API base override)* |
+| `PHI_ENCRYPTION_KEY` | `<base64 32-byte key>` *(PHI at-rest encryption — **required in production**)* |
+| `PHI_ENCRYPTION_KEYS_OLD` | `<comma-separated retired keys>` *(optional; only during key rotation)* |
 | `AWS_ACCESS_KEY_ID` | `<your-aws-access-key>` *(omit to use an IAM role)* |
 | `AWS_SECRET_ACCESS_KEY` | `<your-aws-secret-key>` *(omit to use an IAM role)* |
 | `S3_REGION` | `us-east-1` |
@@ -104,6 +106,21 @@ Set these in **Settings → Environment Variables** for **Production** and
 > restrict the key to the Address Validation API. Restrict the key to the Address
 > Validation API and rotate the bundled default key before going live.
 
+> **PHI encryption at rest (required).** Every patient record (names, addresses, DOB,
+> financials, clinical DOS detail) is encrypted with **AES-256-GCM** before it is
+> written to the `statement_dos.data` column and decrypted transparently on read, so no
+> plaintext PHI is persisted. Set `PHI_ENCRYPTION_KEY` to a base64 32-byte key:
+> `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`.
+> On boot the app **automatically encrypts any existing plaintext rows** in the
+> background (idempotent); you can also run a full, logged pass with
+> `cd backend && npm run encrypt-phi`. The few non-PHI facts SQL needs (validated flag,
+> has-address flag, outstanding amount) are kept in dedicated helper columns, so search,
+> sorting and the financial summary are unchanged. **Losing the key makes existing PHI
+> unrecoverable** — store it in a secret manager and back it up. Rotate by moving the old
+> key into `PHI_ENCRYPTION_KEYS_OLD` (comma-separated) and setting a new
+> `PHI_ENCRYPTION_KEY`; old data still decrypts until re-encrypted. PDFs in S3 are
+> already encrypted at rest (SSE-AES256) and all traffic is TLS.
+>
 > Generate fresh JWT secrets for a real production deploy:
 > `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`
 
