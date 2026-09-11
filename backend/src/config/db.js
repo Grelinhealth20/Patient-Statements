@@ -37,7 +37,7 @@ export async function initPool() {
     database: env.db.database,
     waitForConnections: true,
     // Kept small so many concurrent serverless instances don't exhaust MySQL's
-    // max_connections. Tune with DB_POOL_LIMIT (default 5; use 2-3 on Vercel).
+    // max_connections. Tune with DB_POOL_LIMIT (default 5; use 2-3 when serverless).
     connectionLimit: Number(process.env.DB_POOL_LIMIT || 5),
     queueLimit: 0,
     idleTimeout: 30000,

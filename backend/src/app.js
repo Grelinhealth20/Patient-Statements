@@ -35,7 +35,7 @@ export function createApp() {
 
   // Ensure the DB pool + schema are ready before handling any API request.
   // Cached after the first call, so this is effectively free on warm instances
-  // and makes the app safe to run as a Vercel serverless function.
+  // and makes the app safe to run as a serverless function.
   app.use('/api', async (req, res, next) => {
     try {
       await ensureReady();

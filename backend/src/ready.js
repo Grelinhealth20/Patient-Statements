@@ -3,8 +3,8 @@ import { initSchema } from './config/initDb.js';
 
 /**
  * Lazily initialises the DB pool and schema exactly once per runtime instance.
- * On a traditional server this runs at boot; on Vercel serverless it runs on the
- * first request of each cold-started instance and is cached thereafter.
+ * On a traditional server this runs at boot; in a serverless deployment it runs on
+ * the first request of each cold-started instance and is cached thereafter.
  *
  * The promise is cleared on failure so a transient DB outage can be retried on
  * the next request rather than permanently poisoning the instance.

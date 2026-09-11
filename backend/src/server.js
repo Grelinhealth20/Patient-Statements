@@ -5,7 +5,7 @@ import { ensureReady } from './ready.js';
 /**
  * Traditional (non-serverless) entry point. Initialises the DB + schema up front
  * so the process fails fast on a bad configuration, then starts listening.
- * On Vercel this file is not used — see /api/index.js.
+ * In a serverless deployment this file is not used — see /api/index.js.
  */
 async function bootstrap() {
   try {
